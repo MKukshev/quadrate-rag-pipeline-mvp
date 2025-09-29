@@ -1,0 +1,4 @@
+task,owner,due_date,status
+Утвердить архитектуру,PMO,2025-10-01,done
+Импорт справочников,Data,2025-10-10,in_progress
+Пилотный запуск,Core,2025-10-20,planned

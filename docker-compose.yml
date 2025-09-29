@@ -1,0 +1,49 @@
+
+version: "3.9"
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes:
+      - ollama_models:/root/.ollama
+    mem_limit: 16g
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=docs
+      - EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - KEYWORD_INDEX_DIR=/data/whoosh_index
+      - LLM_MODE=ollama
+      - LLM_MODEL=llama3.1:8b
+      - DOC_TYPE_MODEL_PATH=
+      - LLM_TIMEOUT=240
+      - CHUNK_TOKENS=500
+      - CHUNK_OVERLAP=50
+    volumes:
+      - backend_data:/data
+      - ./backend/models:/app/backend/models
+    depends_on: [qdrant, ollama]
+    ports: ["8000:8000"]
+
+volumes:
+  qdrant_storage:
+  ollama_models:
+  backend_data:

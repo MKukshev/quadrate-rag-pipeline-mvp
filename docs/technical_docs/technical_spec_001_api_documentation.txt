@@ -1,0 +1,483 @@
+ТЕХНИЧЕСКАЯ СПЕЦИФИКАЦИЯ
+API для интеграции с банковскими сервисами
+Версия 2.1
+
+АО "ТехноБанк"
+Дата: 20.04.2024
+Версия документа: 2.1
+
+═══════════════════════════════════════════════════════════════════════════════
+
+1. ОБЩИЕ СВЕДЕНИЯ
+
+1.1 Назначение
+Данный документ описывает REST API для интеграции с банковскими сервисами АО "ТехноБанк". API предоставляет возможность сторонним приложениям получать информацию о счетах, выполнять платежи и получать уведомления о транзакциях.
+
+1.2 Область применения
+API предназначен для использования:
+- Партнерскими организациями
+- Разработчиками мобильных приложений
+- Интеграторами платежных систем
+- Корпоративными клиентами
+
+1.3 Версии API
+- v1.0 - базовая функциональность (устарела)
+- v2.0 - расширенная функциональность (устарела)
+- v2.1 - текущая версия (актуальна)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+2. АУТЕНТИФИКАЦИЯ И АВТОРИЗАЦИЯ
+
+2.1 OAuth 2.0
+API использует протокол OAuth 2.0 для аутентификации и авторизации.
+
+2.2 Типы клиентов
+- Public clients - для мобильных приложений
+- Confidential clients - для серверных приложений
+- Machine-to-machine - для системной интеграции
+
+2.3 Получение токена доступа
+POST /oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+Параметры:
+- grant_type: "client_credentials" | "authorization_code" | "refresh_token"
+- client_id: идентификатор клиента
+- client_secret: секрет клиента (для confidential clients)
+- scope: запрашиваемые разрешения
+
+Ответ:
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "def50200...",
+  "scope": "read:accounts write:payments"
+}
+
+2.4 Использование токена
+Все запросы к API должны содержать заголовок:
+Authorization: Bearer {access_token}
+
+═══════════════════════════════════════════════════════════════════════════════
+
+3. БАЗОВЫЕ ПАРАМЕТРЫ
+
+3.1 Базовый URL
+- Production: https://api.technobank.ru/v2.1
+- Sandbox: https://sandbox-api.technobank.ru/v2.1
+
+3.2 Формат данных
+- Content-Type: application/json
+- Accept: application/json
+- Кодировка: UTF-8
+
+3.3 Коды ответов
+- 200 OK - успешный запрос
+- 201 Created - ресурс создан
+- 400 Bad Request - некорректный запрос
+- 401 Unauthorized - неавторизованный доступ
+- 403 Forbidden - недостаточно прав
+- 404 Not Found - ресурс не найден
+- 429 Too Many Requests - превышен лимит запросов
+- 500 Internal Server Error - внутренняя ошибка сервера
+
+3.4 Пагинация
+Для списков используется пагинация:
+- limit: количество элементов (по умолчанию 20, максимум 100)
+- offset: смещение (по умолчанию 0)
+
+Ответ:
+{
+  "data": [...],
+  "pagination": {
+    "limit": 20,
+    "offset": 0,
+    "total": 150,
+    "has_more": true
+  }
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+
+4. ЭНДПОИНТЫ API
+
+4.1 Информация о счетах
+
+4.1.1 Получение списка счетов
+GET /accounts
+
+Параметры:
+- account_type: "checking" | "savings" | "credit" | "deposit"
+- status: "active" | "blocked" | "closed"
+- currency: "RUB" | "USD" | "EUR"
+
+Ответ:
+{
+  "data": [
+    {
+      "id": "acc_123456789",
+      "type": "checking",
+      "status": "active",
+      "currency": "RUB",
+      "balance": {
+        "amount": 150000.50,
+        "currency": "RUB"
+      },
+      "name": "Основной расчетный счет",
+      "iban": "RU12345678901234567890",
+      "bic": "044525225",
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-04-20T15:45:00Z"
+    }
+  ],
+  "pagination": {...}
+}
+
+4.1.2 Получение информации о счете
+GET /accounts/{account_id}
+
+Ответ:
+{
+  "id": "acc_123456789",
+  "type": "checking",
+  "status": "active",
+  "currency": "RUB",
+  "balance": {
+    "amount": 150000.50,
+    "currency": "RUB"
+  },
+  "name": "Основной расчетный счет",
+  "iban": "RU12345678901234567890",
+  "bic": "044525225",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-04-20T15:45:00Z"
+}
+
+4.2 Транзакции
+
+4.2.1 Получение списка транзакций
+GET /accounts/{account_id}/transactions
+
+Параметры:
+- from_date: дата начала (ISO 8601)
+- to_date: дата окончания (ISO 8601)
+- transaction_type: "debit" | "credit" | "transfer"
+- status: "completed" | "pending" | "failed"
+- limit: количество записей
+- offset: смещение
+
+Ответ:
+{
+  "data": [
+    {
+      "id": "txn_987654321",
+      "type": "transfer",
+      "status": "completed",
+      "amount": {
+        "amount": 5000.00,
+        "currency": "RUB"
+      },
+      "description": "Перевод на карту",
+      "counterparty": {
+        "name": "Иванов Иван Иванович",
+        "account": "****1234"
+      },
+      "created_at": "2024-04-20T14:30:00Z",
+      "executed_at": "2024-04-20T14:31:00Z"
+    }
+  ],
+  "pagination": {...}
+}
+
+4.2.2 Получение информации о транзакции
+GET /transactions/{transaction_id}
+
+Ответ:
+{
+  "id": "txn_987654321",
+  "type": "transfer",
+  "status": "completed",
+  "amount": {
+    "amount": 5000.00,
+    "currency": "RUB"
+  },
+  "description": "Перевод на карту",
+  "counterparty": {
+    "name": "Иванов Иван Иванович",
+    "account": "****1234"
+  },
+  "created_at": "2024-04-20T14:30:00Z",
+  "executed_at": "2024-04-20T14:31:00Z",
+  "fee": {
+    "amount": 30.00,
+    "currency": "RUB"
+  }
+}
+
+4.3 Платежи
+
+4.3.1 Создание платежа
+POST /payments
+
+Тело запроса:
+{
+  "account_id": "acc_123456789",
+  "amount": {
+    "amount": 1000.00,
+    "currency": "RUB"
+  },
+  "recipient": {
+    "name": "ООО 'Поставщик'",
+    "account": "40702810123456789012",
+    "bic": "044525225",
+    "bank_name": "ПАО 'Сбербанк'"
+  },
+  "purpose": "Оплата по договору №123",
+  "priority": "normal"
+}
+
+Ответ:
+{
+  "id": "pay_555666777",
+  "status": "pending",
+  "amount": {
+    "amount": 1000.00,
+    "currency": "RUB"
+  },
+  "recipient": {
+    "name": "ООО 'Поставщик'",
+    "account": "40702810123456789012"
+  },
+  "purpose": "Оплата по договору №123",
+  "created_at": "2024-04-20T16:00:00Z",
+  "estimated_execution": "2024-04-20T18:00:00Z"
+}
+
+4.3.2 Получение статуса платежа
+GET /payments/{payment_id}
+
+Ответ:
+{
+  "id": "pay_555666777",
+  "status": "completed",
+  "amount": {
+    "amount": 1000.00,
+    "currency": "RUB"
+  },
+  "recipient": {
+    "name": "ООО 'Поставщик'",
+    "account": "40702810123456789012"
+  },
+  "purpose": "Оплата по договору №123",
+  "created_at": "2024-04-20T16:00:00Z",
+  "executed_at": "2024-04-20T17:45:00Z",
+  "fee": {
+    "amount": 25.00,
+    "currency": "RUB"
+  }
+}
+
+4.4 Уведомления
+
+4.4.1 Подписка на уведомления
+POST /notifications/subscriptions
+
+Тело запроса:
+{
+  "event_types": ["payment.completed", "payment.failed", "account.balance_changed"],
+  "webhook_url": "https://your-app.com/webhooks/technobank",
+  "secret": "your_webhook_secret"
+}
+
+Ответ:
+{
+  "id": "sub_888999000",
+  "event_types": ["payment.completed", "payment.failed", "account.balance_changed"],
+  "webhook_url": "https://your-app.com/webhooks/technobank",
+  "status": "active",
+  "created_at": "2024-04-20T16:30:00Z"
+}
+
+4.4.2 Формат уведомлений
+POST {webhook_url}
+Content-Type: application/json
+X-TechnoBank-Signature: sha256=...
+
+Тело уведомления:
+{
+  "id": "evt_111222333",
+  "type": "payment.completed",
+  "created_at": "2024-04-20T17:45:00Z",
+  "data": {
+    "payment_id": "pay_555666777",
+    "status": "completed",
+    "amount": {
+      "amount": 1000.00,
+      "currency": "RUB"
+    }
+  }
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+
+5. ОБРАБОТКА ОШИБОК
+
+5.1 Формат ошибок
+{
+  "error": {
+    "code": "INSUFFICIENT_FUNDS",
+    "message": "Недостаточно средств на счете",
+    "details": {
+      "account_id": "acc_123456789",
+      "required_amount": 1000.00,
+      "available_amount": 500.00
+    },
+    "request_id": "req_444555666"
+  }
+}
+
+5.2 Коды ошибок
+- INVALID_REQUEST - некорректный запрос
+- UNAUTHORIZED - неавторизованный доступ
+- FORBIDDEN - недостаточно прав
+- NOT_FOUND - ресурс не найден
+- INSUFFICIENT_FUNDS - недостаточно средств
+- INVALID_ACCOUNT - некорректный счет
+- PAYMENT_LIMIT_EXCEEDED - превышен лимит платежа
+- RATE_LIMIT_EXCEEDED - превышен лимит запросов
+- INTERNAL_ERROR - внутренняя ошибка
+
+═══════════════════════════════════════════════════════════════════════════════
+
+6. ЛИМИТЫ И ОГРАНИЧЕНИЯ
+
+6.1 Лимиты запросов
+- Базовый лимит: 1000 запросов в час
+- Премиум лимит: 10000 запросов в час
+- Бурст лимит: 100 запросов в минуту
+
+6.2 Лимиты платежей
+- Максимальная сумма: 1,000,000 RUB
+- Максимум платежей в день: 100
+- Максимум платежей в месяц: 1000
+
+6.3 Ограничения по времени
+- Время работы API: 24/7
+- Технические работы: воскресенье 02:00-04:00 MSK
+- Уведомления о работах: за 24 часа
+
+═══════════════════════════════════════════════════════════════════════════════
+
+7. БЕЗОПАСНОСТЬ
+
+7.1 HTTPS
+Все запросы должны выполняться по протоколу HTTPS (TLS 1.2+).
+
+7.2 Подпись запросов
+Для критических операций требуется подпись запроса:
+- Алгоритм: HMAC-SHA256
+- Заголовок: X-TechnoBank-Signature
+- Формат: sha256={signature}
+
+7.3 IP-фильтрация
+Доступ к API может быть ограничен по IP-адресам.
+
+7.4 Логирование
+Все запросы логируются для аудита и мониторинга.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+8. ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ
+
+8.1 Получение баланса счета
+```bash
+curl -X GET \
+  https://api.technobank.ru/v2.1/accounts/acc_123456789 \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Accept: application/json"
+```
+
+8.2 Создание платежа
+```bash
+curl -X POST \
+  https://api.technobank.ru/v2.1/payments \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_id": "acc_123456789",
+    "amount": {
+      "amount": 1000.00,
+      "currency": "RUB"
+    },
+    "recipient": {
+      "name": "ООО Поставщик",
+      "account": "40702810123456789012",
+      "bic": "044525225"
+    },
+    "purpose": "Оплата по договору"
+  }'
+```
+
+8.3 Подписка на уведомления
+```bash
+curl -X POST \
+  https://api.technobank.ru/v2.1/notifications/subscriptions \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_types": ["payment.completed"],
+    "webhook_url": "https://your-app.com/webhooks",
+    "secret": "your_secret"
+  }'
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+9. ИЗМЕНЕНИЯ В ВЕРСИЯХ
+
+9.1 Версия 2.1 (текущая)
+- Добавлена поддержка webhook-уведомлений
+- Улучшена обработка ошибок
+- Добавлены новые типы транзакций
+- Оптимизирована производительность
+
+9.2 Версия 2.0
+- Переход на OAuth 2.0
+- Добавлена поддержка пагинации
+- Новые эндпоинты для платежей
+- Улучшена безопасность
+
+9.3 Версия 1.0
+- Базовая функциональность
+- Простая аутентификация
+- Основные операции со счетами
+
+═══════════════════════════════════════════════════════════════════════════════
+
+10. ПОДДЕРЖКА
+
+10.1 Контакты
+- Email: api-support@technobank.ru
+- Телефон: +7 (495) 123-45-67
+- Документация: https://docs.technobank.ru
+- Статус API: https://status.technobank.ru
+
+10.2 Часы работы
+- Техническая поддержка: 24/7
+- Консультации: Пн-Пт 09:00-18:00 MSK
+- Экстренная поддержка: 24/7
+
+10.3 Обновления
+- Уведомления об изменениях: за 30 дней
+- Период поддержки устаревших версий: 12 месяцев
+- Миграционные гайды: в документации
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Документ подготовлен:
+Архитектор API: Петров М.И.
+Дата: 20.04.2024
+Версия: 2.1
+Статус: Утвержден
