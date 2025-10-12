@@ -90,122 +90,6 @@
 
 Ниже — отбор агентных фреймворков и инструментов, которые реально закрывают кейсы (мультидокументный RAG, контекстные чаты, фоновые агенты, «поставить на контроль», совместное использование результатов) в офлайн/приватном облаке с vLLM/Ollama и Qdrant. Я привожу: список кандидатов, обоснование выбора, кто не попал и почему, функциональное сравнение (что можно/нельзя), и практические рекомендации по стратегии реализации.
 
-⸻
-
-## Мультиагентная архитектура с маршрутизацией
-
-```plantuml
-@startuml
-' ---------- Style ----------
-skinparam componentStyle rectangle
-skinparam shadowing false
-skinparam wrapWidth 240
-skinparam defaultFontName "Inter"
-skinparam defaultTextAlignment left
-title Multi-Agent Architecture with Routing (Variant 2)
-
-' ---------- External ----------
-package "Внешние интерфейсы" as EXT {
-  component "Клиенты\n(Web/Mobile/CLI)\n• Web UI (React)\n• WebSocket стриминг" as Clients
-  component "API Gateway + Auth\n• REST/WS вход\n• OIDC/Keycloak\n• gRPC proxy внутрь" as Gateway
-  Clients -[#black]-> Gateway : REST / WS
-}
-
-' ---------- Orchestration ----------
-package "Оркестрация и маршрутизация" as ORCH {
-  component "Router / Orchestrator (Go)\n• Классификация запроса (Router)\n• Планирование: ReAct / Plan-&-Execute\n• Контекст беседы (checkpointer)\n• Распределение по агентам" as Router
-  queue "Scheduler / Events\n• Temporal / APScheduler\n• Kafka / NATS" as Scheduler
-  Scheduler ..> Router : triggers (async)
-}
-Gateway --> Router : REST / gRPC
-
-' ---------- Agents ----------
-package "Слой агентов" as AGENTS {
-  component "RAG-Agent\n• Гибридный ретрив\n• Цитируемые источники" as RagAgent
-  component "Planner/Executor-Agent\n• План → шаги\n• ReAct-петли\n• Вызов инструментов" as PlanAgent
-  component "Summarizer/Report-Agent\n• Повестки/отчёты (SGR)\n• Слайды/таблицы" as SummAgent
-  component "Ops / Guard-Agent\n• Валидации/политики" as OpsAgent
-}
-Router --> RagAgent : dispatch
-Router --> PlanAgent : dispatch
-Router --> SummAgent : dispatch
-Router --> OpsAgent  : dispatch
-
-' ---------- Tools & RAG ----------
-package "Инструменты и RAG-сервисы" as TOOLS {
-  component "Retrieval Service (RAG)\n• Qdrant (векторы)\n• OpenSearch BM25\n• Rerank (Cross-Encoder)\n• Фильтры по space" as Retrieval
-  component "Tools Gateway\n• Email / Calendar\n• Task / Tracker\n• File export (PPTX/Docx)\n• HTTP/gRPC инструменты" as ToolsGW
-  component "SGR / Formatter\n• Outlines / Guardrails / Instructor\n• JSON-схемы / CFG" as SGR
-}
-RagAgent  --> Retrieval : gRPC
-PlanAgent --> ToolsGW   : gRPC / HTTP
-SummAgent --> SGR       : gRPC
-
-' ---------- Model Services ----------
-package "Модельные сервисы (Python/GPU)" as MODELS {
-  component "Embedding Service\nSentenceTransformers\n(bge-small / MiniLM)" as Embed
-  component "ReRanker Service\nCross-Encoder\n(bge-reranker / ms-marco)" as Reranker
-  component "LLM Service\nvLLM (или Ollama)\nOpenAI-совм., token streaming" as LLM
-}
-' Tool calls to LLM
-PlanAgent --> LLM : tool calls / functions
-SGR       --> LLM : format-guided prompt
-
-' Retrieval → model services
-Retrieval --> Embed   : embed(query/docs)
-Retrieval --> Reranker: rerank
-
-' ---------- Data / State / Observability ----------
-package "Данные, состояние и наблюдаемость" as DATA {
-  database "Qdrant" as Qdrant
-  database "OpenSearch" as OpenSearch
-  storage  "MinIO / S3 (артефакты)" as Minio
-  database "Postgres\n(checkpointer / chat history)" as Postgres
-  component "Redis\n(session / memory cache)" as Redis
-  component "Observability\n• OpenTelemetry Collector\n• Prometheus / Grafana\n• Jaeger / Tempo\n• ELK / Loki\n• Langfuse" as Obs
-}
-
-' RAG backends
-Retrieval --> Qdrant    : ANN (vectors)
-Retrieval --> OpenSearch: BM25
-Embed ..> Qdrant : write vectors (ingest)  ##[dashed]
-' Экспорт артефактов
-ToolsGW  --> Minio
-SummAgent--> Minio
-
-' Agent/Tools state
-RagAgent  --> Postgres : read/write context
-PlanAgent --> Postgres
-SummAgent --> Postgres
-OpsAgent  --> Postgres
-RagAgent  --> Redis
-PlanAgent --> Redis
-SummAgent --> Redis
-
-' Observability
-Gateway  --> Obs
-Router   --> Obs
-RagAgent --> Obs
-PlanAgent--> Obs
-SummAgent--> Obs
-Retrieval--> Obs
-Embed    --> Obs
-Reranker --> Obs
-LLM      --> Obs
-
-' Legend (protocols)
-legend left
-  == Протоколы ==
-  1) REST / WS — внешний периметр
-  2) gRPC — внутренняя шина сервисов
-  3) dashed — фоновые/инжест-связи
-endlegend
-
-@enduml
-```
-
-⸻
-
 ## Короткий шорт‑лист (рекомендовано к пилоту)
 
 Orchestration & агенты (ядро):
@@ -228,7 +112,6 @@ RAG/пайплайны и документы (индекс/поиск):
 Наблюдаемость/трейсинг:
 	•	Langfuse (самостоятельный хостинг), OpenTelemetry/callback’и в LlamaIndex и Haystack — для трассировки шагов агента, метрик и отладки.  ￼
 
-⸻
 
 ## Почему именно они (под выбранные кейсы)
 	•	Мультидокументные запросы, разнородные источники — LlamaIndex и Haystack имеют зрелые конвейеры данных/ретриверов и готовые узлы для RAG; в LlamaIndex легко собрать workflow извлечения/слияния контекста; в Haystack — явный граф узлов и Visualize/Debug.  ￼
@@ -238,7 +121,6 @@ RAG/пайплайны и документы (индекс/поиск):
 	•	Офлайн‑модели и взаимозаменяемость — и LangGraph/LangChain, и LlamaIndex, и Haystack имеют адаптеры к Ollama и к OpenAI‑совместимому серверу vLLM → легко переключать LLM без переписывания логики.  ￼
 	•	Хранилище/поиск — все 3 (LangChain/LangGraph, LlamaIndex, Haystack) имеют коннекторы к Qdrant; гибридный поиск (dense+sparse/BM25) закрывается на уровне пайплайна.  ￼
 
-⸻
 
 ## Ограничения (честно)
 	•	Гарантии качества/точности фреймворки не дают: ReAct/ToT/Reflexion улучшают рассуждение, но зависимы от модели и промптов/инструментов; для SGR «валидная форма ≠ верное содержимое» — об этом прямо пишут авторы structured generation.  ￼
@@ -247,7 +129,6 @@ RAG/пайплайны и документы (индекс/поиск):
 	•	Автономные агенты требуют жёстких политик инструментов (таймауты, лимиты, подтверждения), иначе зацикливания/ошибки неизбежны (типично для любой ReAct‑системы).
 	•	Интеграция vLLM — OpenAI‑совместимый сервер стабилен, но не все новейшие API OpenAI поддерживаются немедленно (например, Responses API появлялось с лагом).  ￼
 
-⸻
 
 ## Практические рецепты под выбранные кейсы
 6.1. Мультидокументный запрос (RAG over workspace)
@@ -271,7 +152,6 @@ RAG/пайплайны и документы (индекс/поиск):
 6.5. Наблюдаемость/оценка качества
 	•	Langfuse для трейсов/метрик; Ragas для метрик RAG (faithfulness, answer correctness, context precision/recall). Самохостится.  ￼
 
-⸻
 
 ## Исследование стратегий рассуждения (SGR, ReAct, CoT, ToT, Plan‑and‑Execute)
 	•	ReAct (чередование мыслей и действий) — базовый каркас для «LLM + инструменты». Подходит для «найди → проверь → сгенерируй». Реализуется во всех вышеперечисленных фреймворках.  ￼
@@ -280,7 +160,6 @@ RAG/пайплайны и документы (индекс/поиск):
 	•	Tree‑of‑Thoughts/Reflexion — полезны для сложных задач (разветвлённое планирование/самокритика), но требуют ресурсоёмкости; внедряйте точечно для «тяжёлых» запросов.  ￼
 	•	SGR/Schema‑Guided — «схемы управляют выводом» → используйте structured generation (Outlines/Guidance) + валидацию (Guardrails/Instructor). Это наиболее надёжный способ получать экзекьютив‑отчёты, повестки, JSON для дальнейшей автоматизации.  ￼
 
-⸻
 
 ## Рекомендации по стратегии реализации (MVP → расширение)
 
@@ -299,7 +178,6 @@ R&D → прод:
 	•	Для масштабирования памяти агента — Redis/Postgres‑checkpointer в LangGraph.  ￼
 	•	Внедрить Ragas для регулярной оценки качества поиска/ответов.  ￼
 
-⸻
 
 ## Что конкретно можно/нельзя делать фреймворками
 
@@ -315,7 +193,6 @@ R&D → прод:
 	•	Гарантировать правдивость — фреймворки не доказывают корректность фактов; используйте верификацию/критики/регламенты + Ragas.  ￼
 	•	Scheduling как часть фреймворка — нужен внешний планировщик (Temporal/APScheduler/Celery).  ￼
 
-⸻
 
 ## Как стыкуется со стеком (GPU, офлайн, масштаб)
 	•	Модели: запускаете vLLM на RTX 6000 BWE (OpenAI‑совм. API) — все фреймворки «видят» его как OpenAI; или Ollama для быстрых локальных экспериментов.  ￼
@@ -324,7 +201,6 @@ R&D → прод:
 	•	Наблюдаемость: Langfuse в приватном контуре (Docker Compose).  ￼
 	•	SGR: Outlines/Guidance (поддерживаются в vLLM как backend guided decoding).  ￼
 
-⸻
 
 ## Итоговое решение для MVP (рекомендуемая комбинация)
 	•	Оркестрация/память: LangGraph
@@ -338,4 +214,4 @@ R&D → прод:
 
 Это даст вам: мультидокументный RAG, контекст чатов (в т.ч. групповых), строгие отчёты/повестки, задачи «на контроль» по расписанию, самохост, легкую смену LLM (Ollama ⇄ vLLM), и дорожку к масштабированию.
 
-⸻
+
