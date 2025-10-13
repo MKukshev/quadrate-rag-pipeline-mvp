@@ -1,0 +1,115 @@
+@startuml
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam wrapWidth 220
+skinparam defaultTextAlignment left
+title Variant 2 • Multi-Agent with Routing (Deploy View)
+
+' === Edge ===
+node "Edge" {
+  [Clients\n(Web/Mobile/CLI)] as Clients
+  [API Gateway + Auth\n:8080\nREST/WS, OIDC/Keycloak] as Gateway
+  Clients -down-> Gateway : REST / WS :8080
+}
+
+' === Orchestration ===
+node "Control Plane" {
+  [Router / Orchestrator (Go)\n:7000 gRPC\nReAct / Plan&Execute\nCheckpointer] as Router
+  queue "Scheduler / Events\nTemporal :7233\nNATS :4222" as Sched
+  Sched ..> Router : triggers (async)
+}
+Gateway --> Router : gRPC :7000
+
+' === Agents ===
+node "Agents Layer" {
+  [RAG-Agent\n:7001 gRPC] as RagA
+  [Planner/Executor-Agent\n:7002 gRPC] as PlanA
+  [Summarizer/Report-Agent\n:7003 gRPC] as SummA
+  [Ops/Guard-Agent\n:7004 gRPC] as OpsA
+}
+Router --> RagA  : dispatch
+Router --> PlanA : dispatch
+Router --> SummA : dispatch
+Router --> OpsA  : dispatch
+
+' === Tools & RAG ===
+node "Tools & RAG Services" {
+  [Retrieval Service (Hybrid)\n:7010 gRPC\nQdrant+OpenSearch+ReRank] as Retrieval
+  [Tools Gateway\n:7015 gRPC/HTTP\nEmail/Calendar/Tasks/PPTX] as ToolsGW
+  [SGR / Formatter\n:7020 gRPC\nOutlines/Guardrails/Instructor] as SGR
+}
+RagA  --> Retrieval : gRPC :7010
+PlanA --> ToolsGW   : gRPC/HTTP :7015
+SummA --> SGR       : gRPC :7020
+
+' === Model plane ===
+node "Model Plane (Python/GPU)" {
+  [Embedding Service\n:7030 gRPC\nSentenceTransformers] as Embed
+  [ReRanker Service\n:7031 gRPC\nbge-reranker/ms-marco] as Rerank
+  [LLM Service (vLLM)\n:8000 HTTP (OpenAI-API)] as LLM
+  [Ollama (alt)\n:11434 HTTP] as Ollama
+}
+Retrieval --> Embed  : /embed :7030
+Retrieval --> Rerank : /rerank :7031
+PlanA --> LLM : /v1/chat/completions :8000
+SGR   --> LLM : /v1/completions :8000
+
+' === Data plane ===
+database "Qdrant\n:6333" as Qdrant
+database "OpenSearch\n:9200" as OS
+node "Object Storage" {
+  [MinIO :9000\nConsole :9001] as Minio
+}
+database "Postgres\n:5432" as PG
+[Redis :6379] as Redis
+
+Retrieval --> Qdrant : ANN (vectors) :6333
+Retrieval --> OS     : BM25 :9200
+Embed ..> Qdrant     : write vectors (ingest)
+ToolsGW --> Minio    : export (artifacts)
+SummA   --> Minio    : export (reports)
+Router  --> PG       : state/checkpoints :5432
+RagA    --> PG
+PlanA   --> PG
+SummA   --> PG
+OpsA    --> PG
+Router  --> Redis    : session/memory :6379
+RagA    --> Redis
+PlanA   --> Redis
+SummA   --> Redis
+
+' === Observability ===
+node "Observability" {
+  [OTel Collector\n:4317 gRPC / :4318 HTTP] as OTel
+  [Prometheus :9090] as Prom
+  [Grafana :3000] as Graf
+  [Jaeger UI :16686] as Jaeger
+  [Langfuse :3100] as Langfuse
+  [OS Dashboards :5601] as OSDash
+}
+Gateway  --> OTel
+Router   --> OTel
+RagA     --> OTel
+PlanA    --> OTel
+SummA    --> OTel
+Retrieval--> OTel
+Embed    --> OTel
+Rerank   --> OTel
+LLM      --> OTel
+Ollama   --> OTel
+
+' Legend
+legend left
+== Порты (docker-compose) ==
+Gateway :8080 • Router :7000
+RAG-Agent :7001 • Planner :7002 • Summ :7003 • Ops :7004
+Retrieval :7010 • ToolsGW :7015 • SGR :7020
+Embed :7030 • Reranker :7031
+vLLM :8000 • Ollama :11434
+Qdrant :6333 • OpenSearch :9200
+MinIO :9000/9001 • Postgres :5432 • Redis :6379
+Temporal :7233 • NATS :4222
+OTel :4317/4318 • Prom :9090 • Graf :3000
+Jaeger :16686 • Langfuse :3100 • OS Dash :5601
+endlegend
+@enduml
