@@ -36,6 +36,7 @@ from services.qdrant_store import (
     upsert_chunks,
 )
 from services.rag import build_prompt, call_llm
+from services.summarization import summarize_document_by_id
 
 app = FastAPI(title="AI Assistant MVP (offline)")
 
@@ -66,6 +67,12 @@ class AskRequest(BaseModel):
     space_id: Optional[str] = None
     top_k: int = config.TOP_K_DEFAULT
     doc_types: Optional[List[str]] = None
+
+
+class SummarizeRequest(BaseModel):
+    doc_id: str
+    space_id: str
+    focus: Optional[str] = None
 
 
 @app.post("/ingest")
@@ -205,6 +212,55 @@ def ask(req: AskRequest = Body(...)):
     if cache_key is not None and not answer.startswith("[LLM ошибка"):
         ask_cache.set(cache_key, (deepcopy(response), context_tokens, answer_tokens))
     return response
+
+
+@app.post("/summarize")
+def summarize_document(req: SummarizeRequest = Body(...)):
+    """
+    Суммаризировать документ по doc_id
+    
+    Использует Map-Reduce алгоритм для больших документов (>8K токенов)
+    """
+    try:
+        from services.qdrant_store import client
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        
+        # Получить все чанки документа
+        results = client().scroll(
+            collection_name=config.QDRANT_COLLECTION,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=req.doc_id)),
+                    FieldCondition(key="space_id", match=MatchValue(value=req.space_id)),
+                ]
+            ),
+            limit=1000
+        )
+        
+        if not results[0]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {req.doc_id} not found in space {req.space_id}"
+            )
+        
+        # Суммаризация
+        summary = summarize_document_by_id(req.doc_id, req.space_id, req.focus)
+        
+        return {
+            "doc_id": req.doc_id,
+            "space_id": req.space_id,
+            "summary": summary,
+            "chunks_processed": len(results[0]),
+            "focus": req.focus
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Summarization failed: {str(e)}"
+        )
 
 
 @app.get("/health")

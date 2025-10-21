@@ -97,6 +97,9 @@ list-mig:
 verify-blackwell:
 	@./scripts/verify_blackwell_compatibility.sh
 
+test-summarization:
+	@./scripts/test_summarization.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -129,3 +132,6 @@ help:
 	@echo "  make ingest          - Index documents"
 	@echo "  make ask             - Test RAG query"
 	@echo "  make health          - Check system health"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test-summarization - Test summarization feature"
