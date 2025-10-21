@@ -103,6 +103,9 @@ test-summarization:
 test-modes:
 	@./scripts/test_ask_modes.sh
 
+test-summary-store:
+	@./scripts/test_summary_store.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -139,3 +142,4 @@ help:
 	@echo "Testing:"
 	@echo "  make test-summarization - Test summarization feature"
 	@echo "  make test-modes         - Test /ask modes (auto/normal/summarize/detailed)"
+	@echo "  make test-summary-store - Test summary storage (pattern 4)"

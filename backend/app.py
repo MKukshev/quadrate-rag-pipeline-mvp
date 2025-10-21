@@ -4,7 +4,7 @@ import time
 from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile, BackgroundTasks
 from pydantic import BaseModel
 
 from services import config
@@ -38,6 +38,15 @@ from services.qdrant_store import (
 from services.rag import build_prompt, call_llm
 from services.summarization import summarize_document_by_id, summarize_chunks
 from services.llm_config import get_current_model_config
+from services.summary_store import (
+    save_document_summary,
+    get_document_summary,
+    has_document_summary,
+    delete_document_summary,
+    list_documents_without_summary,
+    get_summary_stats,
+    update_main_collection_summary_flag,
+)
 
 app = FastAPI(title="AI Assistant MVP (offline)")
 
@@ -82,6 +91,8 @@ async def ingest(
     space_id: str = Form(...),
     file: UploadFile = File(...),
     doc_type: Optional[str] = Form(None),
+    generate_summary: bool = Form(False),
+    background_tasks: BackgroundTasks = None,
 ):
     ext = pathlib.Path(file.filename).suffix.lower()
     if ext not in config.ALLOWED_EXT:
@@ -111,11 +122,24 @@ async def ingest(
     )
     upsert_chunks(space_id, doc_id, norm_doc_type, chunks)
     kw_add(space_id, doc_id, norm_doc_type, chunks)
+    
+    # Асинхронная генерация summary
+    if generate_summary and background_tasks:
+        print(f"[Ingest] Scheduling background summarization for {doc_id}")
+        background_tasks.add_task(
+            _generate_and_save_summary_task,
+            doc_id=doc_id,
+            space_id=space_id,
+            doc_type=norm_doc_type,
+            num_chunks=len(chunks)
+        )
+    
     return {
         "doc_id": doc_id,
         "space_id": space_id,
         "doc_type": norm_doc_type,
         "chunks_indexed": len(chunks),
+        "summary_pending": generate_summary,
     }
 
 
@@ -281,9 +305,27 @@ def summarize_document(req: SummarizeRequest = Body(...)):
     """
     Суммаризировать документ по doc_id
     
-    Использует Map-Reduce алгоритм для больших документов (>8K токенов)
+    Сначала проверяет наличие сохраненного summary.
+    Если нет - генерирует на лету.
     """
     try:
+        # Проверить есть ли уже сохраненный summary
+        cached_summary = get_document_summary(req.doc_id, req.space_id)
+        
+        if cached_summary and not req.focus:
+            # Использовать кэшированный summary (если нет фокуса)
+            print(f"[Summarize] Using cached summary for {req.doc_id}")
+            return {
+                "doc_id": req.doc_id,
+                "space_id": req.space_id,
+                "summary": cached_summary["summary"],
+                "chunks_processed": cached_summary.get("original_chunks", 0),
+                "focus": req.focus,
+                "cached": True,
+                "generated_at": cached_summary.get("generated_at"),
+            }
+        
+        # Генерировать на лету
         from services.qdrant_store import client
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         
@@ -306,6 +348,7 @@ def summarize_document(req: SummarizeRequest = Body(...)):
             )
         
         # Суммаризация
+        print(f"[Summarize] Generating on-the-fly summary for {req.doc_id}")
         summary = summarize_document_by_id(req.doc_id, req.space_id, req.focus)
         
         return {
@@ -313,7 +356,8 @@ def summarize_document(req: SummarizeRequest = Body(...)):
             "space_id": req.space_id,
             "summary": summary,
             "chunks_processed": len(results[0]),
-            "focus": req.focus
+            "focus": req.focus,
+            "cached": False,
         }
         
     except HTTPException:
@@ -323,6 +367,39 @@ def summarize_document(req: SummarizeRequest = Body(...)):
             status_code=500,
             detail=f"Summarization failed: {str(e)}"
         )
+
+
+def _generate_and_save_summary_task(
+    doc_id: str,
+    space_id: str,
+    doc_type: str,
+    num_chunks: int
+):
+    """
+    Background task для генерации и сохранения summary
+    """
+    try:
+        print(f"[Background] Starting summarization for {doc_id}")
+        
+        # Генерировать summary
+        summary = summarize_document_by_id(doc_id, space_id, focus=None)
+        
+        # Сохранить в отдельной коллекции
+        summary_id = save_document_summary(
+            doc_id=doc_id,
+            space_id=space_id,
+            summary=summary,
+            doc_type=doc_type,
+            original_chunks=num_chunks
+        )
+        
+        # Обновить флаг в основной коллекции
+        update_main_collection_summary_flag(doc_id, space_id, summary_id)
+        
+        print(f"[Background] Summary saved for {doc_id}, id={summary_id}")
+        
+    except Exception as e:
+        print(f"[Background] Summarization failed for {doc_id}: {e}")
 
 
 @app.get("/health")
@@ -397,6 +474,187 @@ def get_model_configuration():
         "description": model_config.description,
         "recommended_use_cases": model_config.recommended_use_cases,
     }
+
+
+@app.get("/documents/{doc_id}/summary-status")
+def get_summary_status(doc_id: str, space_id: str = Query(...)):
+    """
+    Проверить наличие summary для документа
+    """
+    summary_info = get_document_summary(doc_id, space_id)
+    
+    if summary_info:
+        return {
+            "doc_id": doc_id,
+            "space_id": space_id,
+            "has_summary": True,
+            "summary_preview": summary_info["summary"][:200] + "..." if len(summary_info["summary"]) > 200 else summary_info["summary"],
+            "summary_tokens": summary_info.get("summary_tokens"),
+            "generated_at": summary_info.get("generated_at"),
+            "model": summary_info.get("model"),
+        }
+    else:
+        return {
+            "doc_id": doc_id,
+            "space_id": space_id,
+            "has_summary": False,
+        }
+
+
+@app.post("/documents/{doc_id}/regenerate-summary")
+def regenerate_summary(
+    doc_id: str,
+    space_id: str = Query(...),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Пересоздать summary для документа
+    
+    Полезно если:
+    - Модель LLM изменилась
+    - Нужно обновить summary
+    """
+    from services.qdrant_store import client
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    
+    # Проверить существование документа
+    results = client().scroll(
+        collection_name=config.QDRANT_COLLECTION,
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                FieldCondition(key="space_id", match=MatchValue(value=space_id)),
+            ]
+        ),
+        limit=1
+    )
+    
+    if not results[0]:
+        raise HTTPException(404, f"Document {doc_id} not found")
+    
+    doc_type = results[0][0].payload.get("doc_type")
+    num_chunks = len(results[0])
+    
+    if background_tasks:
+        # Асинхронная регенерация
+        print(f"[API] Scheduling summary regeneration for {doc_id}")
+        background_tasks.add_task(
+            _generate_and_save_summary_task,
+            doc_id=doc_id,
+            space_id=space_id,
+            doc_type=doc_type,
+            num_chunks=num_chunks
+        )
+        return {
+            "doc_id": doc_id,
+            "space_id": space_id,
+            "status": "pending",
+            "message": "Summary regeneration scheduled"
+        }
+    else:
+        # Синхронная регенерация
+        summary = summarize_document_by_id(doc_id, space_id)
+        summary_id = save_document_summary(
+            doc_id=doc_id,
+            space_id=space_id,
+            summary=summary,
+            doc_type=doc_type,
+            original_chunks=num_chunks
+        )
+        update_main_collection_summary_flag(doc_id, space_id, summary_id)
+        
+        return {
+            "doc_id": doc_id,
+            "space_id": space_id,
+            "status": "completed",
+            "summary": summary
+        }
+
+
+@app.post("/bulk-summarize")
+def bulk_summarize(
+    space_id: str = Query(...),
+    doc_types: Optional[List[str]] = Query(None),
+    limit: int = Query(100),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Массовая суммаризация документов в space
+    
+    Суммаризирует все документы которые еще не имеют summary.
+    """
+    # Найти документы без summary
+    docs_without_summary = list_documents_without_summary(space_id, doc_types, limit)
+    
+    if not docs_without_summary:
+        return {
+            "space_id": space_id,
+            "documents_to_process": 0,
+            "message": "All documents already have summaries"
+        }
+    
+    # Запустить суммаризацию для каждого документа
+    from services.qdrant_store import client
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    
+    for doc_id in docs_without_summary:
+        # Получить метаданные документа
+        results = client().scroll(
+            collection_name=config.QDRANT_COLLECTION,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                    FieldCondition(key="space_id", match=MatchValue(value=space_id)),
+                ]
+            ),
+            limit=1000
+        )
+        
+        if results[0]:
+            doc_type = results[0][0].payload.get("doc_type")
+            num_chunks = len(results[0])
+            
+            if background_tasks:
+                background_tasks.add_task(
+                    _generate_and_save_summary_task,
+                    doc_id=doc_id,
+                    space_id=space_id,
+                    doc_type=doc_type,
+                    num_chunks=num_chunks
+                )
+    
+    return {
+        "space_id": space_id,
+        "documents_to_process": len(docs_without_summary),
+        "doc_ids": docs_without_summary,
+        "status": "scheduled" if background_tasks else "processing"
+    }
+
+
+@app.get("/summary-stats")
+def summary_statistics(space_id: Optional[str] = Query(None)):
+    """
+    Статистика по сохраненным summaries
+    """
+    stats = get_summary_stats(space_id)
+    return stats
+
+
+@app.delete("/documents/{doc_id}/summary")
+def delete_summary(doc_id: str, space_id: str = Query(...)):
+    """
+    Удалить summary для документа
+    """
+    deleted = delete_document_summary(doc_id, space_id)
+    
+    if deleted:
+        return {
+            "doc_id": doc_id,
+            "space_id": space_id,
+            "status": "deleted"
+        }
+    else:
+        raise HTTPException(404, f"Summary not found for document {doc_id}")
 
 
 def _normalize_doc_types(values: Optional[List[str]], fallback_text: Optional[str]) -> Optional[List[str]]:
