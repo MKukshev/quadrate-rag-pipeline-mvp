@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services import config
@@ -36,7 +37,7 @@ from services.qdrant_store import (
     upsert_chunks,
 )
 from services.rag import build_prompt, call_llm
-from services.summarization import summarize_document_by_id, summarize_chunks
+from services.summarization import summarize_document_by_id, summarize_chunks, summarize_document_streaming
 from services.llm_config import get_current_model_config
 from services.summary_store import (
     save_document_summary,
@@ -367,6 +368,87 @@ def summarize_document(req: SummarizeRequest = Body(...)):
             status_code=500,
             detail=f"Summarization failed: {str(e)}"
         )
+
+
+@app.post("/summarize-stream")
+async def summarize_document_stream(req: SummarizeRequest = Body(...)):
+    """
+    Потоковая суммаризация документа (SSE)
+    
+    Возвращает Server-Sent Events с прогрессом генерации.
+    Показывает:
+    - Прогресс обработки
+    - Промежуточные результаты
+    - ETA (estimated time)
+    - Финальный summary
+    """
+    import json
+    
+    async def generate_events():
+        try:
+            # Проверить кэш
+            cached = get_document_summary(req.doc_id, req.space_id)
+            
+            if cached and not req.focus:
+                # Вернуть кэшированный summary сразу
+                yield f"data: {json.dumps({
+                    'type': 'cached',
+                    'summary': cached['summary'],
+                    'progress': 100,
+                    'generated_at': cached.get('generated_at')
+                })}\n\n"
+                return
+            
+            # Streaming суммаризация
+            async for event in summarize_document_streaming(req.doc_id, req.space_id, req.focus):
+                yield f"data: {json.dumps(event)}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+@app.post("/summarize-poll")
+async def summarize_document_poll(
+    req: SummarizeRequest = Body(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Long polling fallback для браузеров без SSE поддержки
+    
+    Запускает суммаризацию в фоне и возвращает task_id.
+    Клиент затем poll'ит статус через GET /summarize-status/{task_id}
+    """
+    # Проверить кэш
+    cached = get_document_summary(req.doc_id, req.space_id)
+    
+    if cached and not req.focus:
+        return {
+            "status": "complete",
+            "summary": cached['summary'],
+            "cached": True
+        }
+    
+    # Создать task_id
+    task_id = f"{req.doc_id}_{uuid.uuid4().hex[:8]}"
+    
+    # Запустить в фоне (simplified version - в production используйте Celery/Redis)
+    # Для демо просто вернем инструкцию использовать SSE
+    return {
+        "status": "pending",
+        "task_id": task_id,
+        "message": "Long polling not fully implemented. Please use /summarize-stream for real-time progress.",
+        "recommendation": "Use Server-Sent Events endpoint: POST /summarize-stream"
+    }
 
 
 def _generate_and_save_summary_task(

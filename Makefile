@@ -106,6 +106,9 @@ test-modes:
 test-summary-store:
 	@./scripts/test_summary_store.sh
 
+test-streaming:
+	@./scripts/test_streaming.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -143,3 +146,4 @@ help:
 	@echo "  make test-summarization - Test summarization feature"
 	@echo "  make test-modes         - Test /ask modes (auto/normal/summarize/detailed)"
 	@echo "  make test-summary-store - Test summary storage (pattern 4)"
+	@echo "  make test-streaming     - Test streaming summarization (pattern 5)"

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streaming Summarization Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #7f8c8d;
+            margin-bottom: 30px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #34495e;
+            font-weight: 500;
+        }
+        
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: #3498db;
+            color: white;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            background: #2980b9;
+        }
+        
+        .btn-secondary {
+            background: #95a5a6;
+            color: white;
+        }
+        
+        .btn-secondary:hover:not(:disabled) {
+            background: #7f8c8d;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .progress-section {
+            margin-bottom: 30px;
+            display: none;
+        }
+        
+        .progress-section.active {
+            display: block;
+        }
+        
+        .progress-bar {
+            height: 30px;
+            background: #ecf0f1;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #2ecc71);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 500;
+            font-size: 13px;
+        }
+        
+        .status-message {
+            color: #7f8c8d;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #3498db;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .partial-results {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .partial-results h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        
+        .chunk-summary {
+            padding: 12px;
+            background: white;
+            border-left: 3px solid #3498db;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        
+        .chunk-summary strong {
+            color: #3498db;
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .chunk-summary p {
+            color: #555;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        .final-summary {
+            margin-top: 30px;
+            padding: 20px;
+            background: #e8f8f5;
+            border-radius: 8px;
+            border-left: 4px solid #2ecc71;
+        }
+        
+        .final-summary h3 {
+            color: #27ae60;
+            margin-bottom: 15px;
+        }
+        
+        .final-summary-text {
+            color: #2c3e50;
+            line-height: 1.7;
+            font-size: 15px;
+        }
+        
+        .meta-info {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #c8e6c9;
+            color: #7f8c8d;
+            font-size: 13px;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .error {
+            padding: 15px;
+            background: #f8d7da;
+            color: #721c24;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Streaming Summarization Demo</h1>
+        <p class="subtitle">Real-time document summarization with progress tracking</p>
+        
+        <div class="form-group">
+            <label>Document ID:</label>
+            <input type="text" id="docId" placeholder="e.g., document_abc123" value="">
+        </div>
+        
+        <div class="form-group">
+            <label>Space ID:</label>
+            <input type="text" id="spaceId" placeholder="e.g., demo" value="space_demo">
+        </div>
+        
+        <div class="form-group">
+            <label>Focus (optional):</label>
+            <textarea id="focus" placeholder="Optional: focus on specific aspects..."></textarea>
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-primary" id="startBtn" onclick="startSummarization()">
+                Start Streaming Summarization
+            </button>
+            <button class="btn-secondary" id="cancelBtn" onclick="cancelSummarization()" disabled>
+                Cancel
+            </button>
+        </div>
+        
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill" style="width: 0%">0%</div>
+            </div>
+            
+            <div class="status-message" id="statusMessage">
+                <div class="spinner"></div>
+                <span>Initializing...</span>
+            </div>
+            
+            <div class="partial-results" id="partialResults" style="display: none;">
+                <h3>📄 Partial Results</h3>
+                <div id="partialResultsContent"></div>
+            </div>
+        </div>
+        
+        <div id="finalSummary"></div>
+        <div id="error"></div>
+    </div>
+    
+    <script>
+        let eventSource = null;
+        
+        function startSummarization() {
+            const docId = document.getElementById('docId').value.trim();
+            const spaceId = document.getElementById('spaceId').value.trim();
+            const focus = document.getElementById('focus').value.trim();
+            
+            if (!docId || !spaceId) {
+                alert('Please provide both Document ID and Space ID');
+                return;
+            }
+            
+            // Reset UI
+            document.getElementById('progressSection').classList.add('active');
+            document.getElementById('partialResults').style.display = 'none';
+            document.getElementById('partialResultsContent').innerHTML = '';
+            document.getElementById('finalSummary').innerHTML = '';
+            document.getElementById('error').innerHTML = '';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressFill').textContent = '0%';
+            
+            // Disable start button, enable cancel
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('cancelBtn').disabled = false;
+            
+            // Create SSE connection
+            const body = JSON.stringify({
+                doc_id: docId,
+                space_id: spaceId,
+                focus: focus || null
+            });
+            
+            fetch('http://localhost:8000/summarize-stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: body
+            }).then(response => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                function readStream() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            document.getElementById('startBtn').disabled = false;
+                            document.getElementById('cancelBtn').disabled = true;
+                            return;
+                        }
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n').filter(line => line.startsWith('data: '));
+                        
+                        lines.forEach(line => {
+                            const data = JSON.parse(line.substring(6));
+                            handleEvent(data);
+                        });
+                        
+                        readStream();
+                    }).catch(err => {
+                        showError('Stream error: ' + err.message);
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('cancelBtn').disabled = true;
+                    });
+                }
+                
+                readStream();
+            }).catch(err => {
+                showError('Connection error: ' + err.message);
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('cancelBtn').disabled = true;
+            });
+        }
+        
+        function handleEvent(data) {
+            const progress = data.progress || 0;
+            const progressFill = document.getElementById('progressFill');
+            const statusMessage = document.getElementById('statusMessage');
+            
+            progressFill.style.width = progress + '%';
+            progressFill.textContent = progress + '%';
+            
+            switch (data.type) {
+                case 'cached':
+                    statusMessage.innerHTML = '<div class="spinner"></div><span>✅ Loaded from cache!</span>';
+                    showFinalSummary(data.summary, { cached: true, generated_at: data.generated_at });
+                    break;
+                
+                case 'start':
+                    statusMessage.innerHTML = `<div class="spinner"></div><span>Starting ${data.strategy} summarization for ${data.total_tokens} tokens...</span>`;
+                    break;
+                
+                case 'processing':
+                    const eta = data.eta_seconds ? ` (ETA: ${data.eta_seconds}s)` : '';
+                    statusMessage.innerHTML = `<div class="spinner"></div><span>${data.message}${eta}</span>`;
+                    break;
+                
+                case 'progress':
+                    const etaText = data.eta_seconds ? ` - ETA: ${data.eta_seconds}s` : '';
+                    statusMessage.innerHTML = `<div class="spinner"></div><span>${data.message}${etaText}</span>`;
+                    break;
+                
+                case 'partial_summary':
+                    document.getElementById('partialResults').style.display = 'block';
+                    addPartialResult(data.chunk, data.summary, data.tokens, data.processing_time);
+                    break;
+                
+                case 'summary':
+                    statusMessage.innerHTML = '<span>✅ Complete!</span>';
+                    showFinalSummary(data.text, {
+                        tokens: data.tokens,
+                        processing_time: data.processing_time,
+                        map_chunks: data.map_chunks
+                    });
+                    break;
+                
+                case 'complete':
+                    console.log('Summarization complete:', data);
+                    break;
+                
+                case 'error':
+                    showError(data.message);
+                    break;
+            }
+        }
+        
+        function addPartialResult(chunk, summary, tokens, time) {
+            const container = document.getElementById('partialResultsContent');
+            const div = document.createElement('div');
+            div.className = 'chunk-summary';
+            div.innerHTML = `
+                <strong>Chunk ${chunk}:</strong>
+                <p>${summary}</p>
+                <small style="color: #95a5a6;">Tokens: ${tokens} | Time: ${time}s</small>
+            `;
+            container.appendChild(div);
+        }
+        
+        function showFinalSummary(text, meta) {
+            const container = document.getElementById('finalSummary');
+            
+            let badges = '';
+            if (meta.cached) {
+                badges += '<span class="badge badge-success">Cached</span>';
+            }
+            if (meta.tokens) {
+                badges += `<span class="badge badge-info">${meta.tokens} tokens</span>`;
+            }
+            if (meta.map_chunks) {
+                badges += `<span class="badge badge-info">${meta.map_chunks} chunks processed</span>`;
+            }
+            
+            container.innerHTML = `
+                <div class="final-summary">
+                    <h3>✨ Summary</h3>
+                    <div class="final-summary-text">${text}</div>
+                    <div class="meta-info">
+                        ${badges}
+                        ${meta.processing_time ? `Processing time: ${meta.processing_time}s` : ''}
+                        ${meta.generated_at ? `Generated: ${new Date(meta.generated_at).toLocaleString()}` : ''}
+                    </div>
+                </div>
+            `;
+        }
+        
+        function showError(message) {
+            document.getElementById('error').innerHTML = `
+                <div class="error">
+                    <strong>Error:</strong> ${message}
+                </div>
+            `;
+        }
+        
+        function cancelSummarization() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('cancelBtn').disabled = true;
+            document.getElementById('statusMessage').innerHTML = '<span>❌ Cancelled</span>';
+        }
+    </script>
+</body>
+</html>
+

@@ -4,10 +4,12 @@ Provides map-reduce summarization for large documents that exceed context limits
 """
 
 import asyncio
-from typing import List, Dict, Optional
+import time
+from typing import List, Dict, Optional, AsyncGenerator
 from .rag import call_llm
 from .chunking import split_markdown
 from . import config
+from .llm_config import get_current_model_config
 
 
 def count_tokens_simple(text: str) -> int:
@@ -246,4 +248,220 @@ def summarize_long_text_sync(text: str, chunk_size: int = 8000, focus: Optional[
         return loop.run_until_complete(summarize_long_text(text, chunk_size, focus=focus))
     finally:
         loop.close()
+
+
+async def summarize_document_streaming(
+    doc_id: str,
+    space_id: str,
+    focus: Optional[str] = None
+) -> AsyncGenerator[Dict, None]:
+    """
+    Progressive streaming summarization with detailed progress
+    
+    Yields events:
+    - type: "start" - начало процесса
+    - type: "processing" - обработка
+    - type: "progress" - прогресс Map фазы
+    - type: "partial_summary" - промежуточный результат чанка
+    - type: "reduce" - фаза объединения
+    - type: "summary" - финальный summary
+    - type: "complete" - завершение
+    """
+    from services.qdrant_store import client
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    
+    start_time = time.time()
+    model_config = get_current_model_config()
+    
+    # Получить все чанки документа
+    results = client().scroll(
+        collection_name=config.QDRANT_COLLECTION,
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+                FieldCondition(key="space_id", match=MatchValue(value=space_id)),
+            ]
+        ),
+        limit=1000,
+        with_payload=True,
+        with_vectors=False
+    )
+    
+    if not results[0]:
+        yield {
+            "type": "error",
+            "message": f"Document {doc_id} not found"
+        }
+        return
+    
+    chunks = results[0]
+    texts = [c.payload.get("text", "") for c in chunks]
+    combined_text = "\n\n".join(texts)
+    total_tokens = count_tokens_simple(combined_text)
+    
+    # Определить стратегию
+    threshold = 8000
+    
+    if total_tokens <= threshold:
+        # Простая суммаризация
+        yield {
+            "type": "start",
+            "total_chunks": len(chunks),
+            "total_tokens": total_tokens,
+            "strategy": "simple",
+            "progress": 0
+        }
+        
+        yield {
+            "type": "processing",
+            "stage": "simple",
+            "progress": 30,
+            "message": f"Generating summary for document ({total_tokens} tokens)...",
+            "eta_seconds": int(total_tokens / model_config.tokens_per_second)
+        }
+        
+        # Генерировать summary
+        chunk_start = time.time()
+        summary = await summarize_text(combined_text, max_summary_tokens=2000, focus=focus)
+        chunk_time = time.time() - chunk_start
+        
+        yield {
+            "type": "summary",
+            "text": summary,
+            "progress": 100,
+            "tokens": count_tokens_simple(summary),
+            "processing_time": round(chunk_time, 2)
+        }
+        
+        yield {
+            "type": "complete",
+            "progress": 100,
+            "total_time": round(time.time() - start_time, 2)
+        }
+        
+    else:
+        # Map-Reduce стратегия
+        num_map_chunks = (total_tokens // 6000) + 1
+        
+        yield {
+            "type": "start",
+            "total_chunks": len(chunks),
+            "total_tokens": total_tokens,
+            "strategy": "map_reduce",
+            "map_chunks": num_map_chunks,
+            "progress": 0
+        }
+        
+        yield {
+            "type": "processing",
+            "stage": "map_reduce",
+            "progress": 5,
+            "message": f"Large document ({total_tokens} tokens). Using Map-Reduce with {num_map_chunks} chunks...",
+            "eta_seconds": int((total_tokens / model_config.tokens_per_second) * 1.5)  # Map-Reduce overhead
+        }
+        
+        # MAP фаза
+        chunk_summaries = []
+        tokens_per_chunk = 6000
+        
+        for i in range(num_map_chunks):
+            start_idx = int(i * tokens_per_chunk * 0.85)  # 15% overlap
+            end_idx = int(min((i + 1) * tokens_per_chunk, len(combined_text)))
+            
+            # Найти границу предложения
+            if end_idx < len(combined_text):
+                next_period = combined_text.find('. ', end_idx)
+                if next_period != -1 and next_period < end_idx + 200:
+                    end_idx = next_period + 1
+            
+            chunk_text = combined_text[start_idx:end_idx].strip()
+            chunk_tokens = count_tokens_simple(chunk_text)
+            
+            # Оценка оставшегося времени
+            remaining_chunks = num_map_chunks - i
+            avg_tokens_per_chunk = chunk_tokens
+            eta = int((remaining_chunks * avg_tokens_per_chunk / model_config.tokens_per_second) + 5)  # +5s для reduce
+            
+            yield {
+                "type": "progress",
+                "stage": "map",
+                "current": i + 1,
+                "total": num_map_chunks,
+                "progress": 10 + int(60 * (i + 1) / num_map_chunks),
+                "message": f"Processing chunk {i+1}/{num_map_chunks} ({chunk_tokens} tokens)...",
+                "eta_seconds": eta
+            }
+            
+            # Суммаризировать чанк
+            chunk_start = time.time()
+            chunk_summary = await summarize_text(
+                chunk_text,
+                max_summary_tokens=800,
+                focus=focus
+            )
+            chunk_time = time.time() - chunk_start
+            
+            chunk_summaries.append(chunk_summary)
+            
+            # Отдать промежуточный результат
+            preview_length = 150
+            yield {
+                "type": "partial_summary",
+                "chunk": i + 1,
+                "summary": chunk_summary[:preview_length] + "..." if len(chunk_summary) > preview_length else chunk_summary,
+                "full_summary": chunk_summary,
+                "tokens": count_tokens_simple(chunk_summary),
+                "processing_time": round(chunk_time, 2)
+            }
+            
+            # Небольшая пауза для клиента
+            await asyncio.sleep(0.1)
+        
+        # REDUCE фаза
+        yield {
+            "type": "progress",
+            "stage": "reduce",
+            "progress": 75,
+            "message": f"Combining {len(chunk_summaries)} summaries...",
+            "eta_seconds": int(sum(count_tokens_simple(s) for s in chunk_summaries) / model_config.tokens_per_second)
+        }
+        
+        # Объединить summaries
+        combined_summaries = "\n\n".join([
+            f"Section {i+1}:\n{summary}"
+            for i, summary in enumerate(chunk_summaries)
+        ])
+        
+        reduce_prompt = f"""Combine these section summaries into one coherent, comprehensive summary.
+Maintain key information and structure.
+
+{combined_summaries}
+"""
+        
+        if focus:
+            reduce_prompt += f"\n\nFocus on: {focus}"
+        
+        reduce_start = time.time()
+        final_summary = await summarize_text(
+            reduce_prompt,
+            max_summary_tokens=model_config.summarization_max_output,
+            focus=None  # Focus уже в промпте
+        )
+        reduce_time = time.time() - reduce_start
+        
+        yield {
+            "type": "summary",
+            "text": final_summary,
+            "progress": 100,
+            "tokens": count_tokens_simple(final_summary),
+            "map_chunks": num_map_chunks,
+            "processing_time": round(reduce_time, 2)
+        }
+        
+        yield {
+            "type": "complete",
+            "progress": 100,
+            "total_time": round(time.time() - start_time, 2),
+            "tokens_processed": total_tokens
+        }
 
