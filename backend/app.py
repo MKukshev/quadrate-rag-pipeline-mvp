@@ -48,6 +48,16 @@ from services.summary_store import (
     get_summary_stats,
     update_main_collection_summary_flag,
 )
+from services.thread_parser import parse_email_thread, parse_telegram_chat, parse_whatsapp_chat
+from services.thread_store import (
+    save_chat_message,
+    get_thread_messages,
+    save_thread_summary,
+    get_thread_summary,
+    list_threads,
+    delete_thread,
+)
+from services.thread_summarization import summarize_thread, summarize_thread_from_messages
 
 app = FastAPI(title="AI Assistant MVP (offline)")
 
@@ -84,6 +94,25 @@ class AskRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     doc_id: str
     space_id: str
+    focus: Optional[str] = None
+
+
+class ChatMessageRequest(BaseModel):
+    thread_id: str
+    space_id: str
+    sender: str
+    text: str
+    recipients: Optional[List[str]] = None
+    chat_type: str = "user_chat"
+    metadata: Optional[Dict] = None
+
+
+class ThreadSummarizeRequest(BaseModel):
+    thread_id: str
+    space_id: str
+    extract_action_items: bool = True
+    extract_decisions: bool = True
+    extract_topics: bool = True
     focus: Optional[str] = None
 
 
@@ -737,6 +766,291 @@ def delete_summary(doc_id: str, space_id: str = Query(...)):
         }
     else:
         raise HTTPException(404, f"Summary not found for document {doc_id}")
+
+
+# ===== Thread / Conversation Endpoints =====
+
+@app.post("/chat/message")
+def post_chat_message(req: ChatMessageRequest = Body(...)):
+    """
+    Сохранить сообщение в чат-тред
+    
+    Для пользовательских чатов в приложении.
+    Сообщения сохраняются в отдельную коллекцию с thread_id.
+    """
+    try:
+        message_id = save_chat_message(
+            thread_id=req.thread_id,
+            space_id=req.space_id,
+            sender=req.sender,
+            text=req.text,
+            recipients=req.recipients,
+            chat_type=req.chat_type,
+            metadata=req.metadata
+        )
+        
+        return {
+            "message_id": message_id,
+            "thread_id": req.thread_id,
+            "space_id": req.space_id,
+            "status": "saved"
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to save message: {str(e)}")
+
+
+@app.get("/chat/thread/{thread_id}/messages")
+def get_chat_thread_messages(
+    thread_id: str,
+    space_id: str = Query(...),
+    limit: int = Query(1000),
+    offset: int = Query(0)
+):
+    """
+    Получить все сообщения треда
+    """
+    try:
+        messages = get_thread_messages(thread_id, space_id, limit, offset)
+        
+        return {
+            "thread_id": thread_id,
+            "space_id": space_id,
+            "message_count": len(messages),
+            "messages": messages
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get messages: {str(e)}")
+
+
+@app.post("/thread/summarize")
+async def summarize_chat_thread(req: ThreadSummarizeRequest = Body(...)):
+    """
+    Суммаризировать чат-тред с извлечением структурированной информации
+    
+    Автоматически извлекает:
+    - Базовую суммаризацию разговора
+    - Action items (задачи, TODO)
+    - Decisions (принятые решения)
+    - Topics (обсуждаемые темы)
+    - Участников и хронологию
+    """
+    try:
+        # Получить сообщения треда
+        messages = get_thread_messages(req.thread_id, req.space_id)
+        
+        if not messages:
+            raise HTTPException(404, f"Thread {req.thread_id} not found or has no messages")
+        
+        # Определить тип чата
+        chat_type = messages[0].get("chat_type", "user_chat")
+        
+        # Суммаризировать
+        result = await summarize_thread_from_messages(
+            messages,
+            chat_type=chat_type,
+            extract_action_items=req.extract_action_items,
+            extract_decisions=req.extract_decisions,
+            extract_topics=req.extract_topics,
+            focus=req.focus
+        )
+        
+        # Сохранить summary
+        save_thread_summary(
+            thread_id=req.thread_id,
+            space_id=req.space_id,
+            summary=result["summary"],
+            chat_type=result["thread_type"],
+            participants=result["participants"],
+            message_count=result["message_count"],
+            start_date=result["start_date"],
+            end_date=result["end_date"],
+            action_items=result.get("action_items", []),
+            decisions=result.get("decisions", []),
+            topics=result.get("topics", [])
+        )
+        
+        return {
+            "thread_id": req.thread_id,
+            "space_id": req.space_id,
+            **result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Thread summarization failed: {str(e)}")
+
+
+@app.get("/thread/{thread_id}/summary")
+def get_chat_thread_summary(thread_id: str, space_id: str = Query(...)):
+    """
+    Получить сохраненную суммаризацию треда
+    """
+    summary = get_thread_summary(thread_id, space_id)
+    
+    if not summary:
+        raise HTTPException(404, f"Summary not found for thread {thread_id}")
+    
+    return {
+        "thread_id": thread_id,
+        "space_id": space_id,
+        **summary
+    }
+
+
+@app.post("/ingest-thread")
+async def ingest_thread_file(
+    space_id: str = Form(...),
+    file: UploadFile = File(...),
+    thread_type: str = Form("email"),
+    auto_summarize: bool = Form(True),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Загрузить и проиндексировать файл с email/chat тредом
+    
+    Поддерживаемые форматы:
+    - email: .txt с email тредом
+    - telegram: Telegram export
+    - whatsapp: WhatsApp export
+    
+    Автоматически:
+    - Парсит структуру треда
+    - Сохраняет сообщения в chat_messages
+    - Опционально генерирует summary
+    """
+    try:
+        data = await file.read()
+        text = data.decode('utf-8', errors='ignore')
+        
+        # Парсить thread
+        if thread_type == "email":
+            thread = parse_email_thread(text)
+        elif thread_type == "telegram":
+            thread = parse_telegram_chat(text)
+        elif thread_type == "whatsapp":
+            thread = parse_whatsapp_chat(text)
+        else:
+            raise HTTPException(400, f"Unsupported thread_type: {thread_type}")
+        
+        # Создать thread_id
+        thread_id = f"{pathlib.Path(file.filename).stem}_{uuid.uuid4().hex[:8]}"
+        
+        # Сохранить сообщения
+        for msg in thread.messages:
+            save_chat_message(
+                thread_id=thread_id,
+                space_id=space_id,
+                sender=msg.sender,
+                text=msg.text,
+                recipients=msg.recipients,
+                message_timestamp=msg.date,
+                chat_type=f"{thread_type}_thread",
+                metadata={
+                    "subject": msg.subject,
+                    "message_id": msg.message_id,
+                    "reply_to": msg.reply_to
+                }
+            )
+        
+        # Опционально суммаризировать
+        if auto_summarize and background_tasks:
+            background_tasks.add_task(
+                _summarize_thread_background,
+                thread_id=thread_id,
+                space_id=space_id,
+                thread=thread
+            )
+        
+        return {
+            "thread_id": thread_id,
+            "space_id": space_id,
+            "thread_type": f"{thread_type}_thread",
+            "messages": len(thread.messages),
+            "participants": thread.participants,
+            "start_date": thread.start_date.isoformat(),
+            "end_date": thread.end_date.isoformat(),
+            "summary_pending": auto_summarize
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Thread ingestion failed: {str(e)}")
+
+
+@app.get("/threads")
+def list_all_threads(
+    space_id: str = Query(...),
+    chat_type: Optional[str] = Query(None),
+    limit: int = Query(100)
+):
+    """
+    Список всех тредов в space
+    """
+    try:
+        threads = list_threads(space_id, chat_type, limit)
+        
+        return {
+            "space_id": space_id,
+            "thread_count": len(threads),
+            "threads": threads
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list threads: {str(e)}")
+
+
+@app.delete("/thread/{thread_id}")
+def delete_chat_thread(thread_id: str, space_id: str = Query(...)):
+    """
+    Удалить тред (сообщения + summary)
+    """
+    try:
+        deleted = delete_thread(thread_id, space_id)
+        
+        if deleted:
+            return {
+                "thread_id": thread_id,
+                "space_id": space_id,
+                "status": "deleted"
+            }
+        else:
+            raise HTTPException(404, f"Thread {thread_id} not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete thread: {str(e)}")
+
+
+async def _summarize_thread_background(thread_id: str, space_id: str, thread):
+    """Background task для суммаризации треда"""
+    try:
+        print(f"[Background] Summarizing thread {thread_id}")
+        
+        result = await summarize_thread(thread)
+        
+        save_thread_summary(
+            thread_id=thread_id,
+            space_id=space_id,
+            summary=result["summary"],
+            chat_type=result["thread_type"],
+            participants=result["participants"],
+            message_count=result["message_count"],
+            start_date=result["start_date"],
+            end_date=result["end_date"],
+            action_items=result.get("action_items", []),
+            decisions=result.get("decisions", []),
+            topics=result.get("topics", [])
+        )
+        
+        print(f"[Background] Thread summary saved for {thread_id}")
+        
+    except Exception as e:
+        print(f"[Background] Thread summarization failed: {e}")
 
 
 def _normalize_doc_types(values: Optional[List[str]], fallback_text: Optional[str]) -> Optional[List[str]]:
