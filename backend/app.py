@@ -68,6 +68,7 @@ class AskRequest(BaseModel):
     space_id: Optional[str] = None
     top_k: int = config.TOP_K_DEFAULT
     doc_types: Optional[List[str]] = None
+    mode: str = "auto"  # "auto" | "normal" | "summarize" | "detailed"
 
 
 class SummarizeRequest(BaseModel):
@@ -196,18 +197,41 @@ def ask(req: AskRequest = Body(...)):
     mmr_selected = _apply_mmr(candidate_pool, req.q, effective_top_k)
     fused = _limit_one_chunk_per_doc(mmr_selected, candidate_pool, effective_top_k)
     
-    # Smart context compression: автоматическая суммаризация для больших контекстов
+    # Smart context compression с режимами работы
     context_tokens = _count_context_tokens(fused)
     model_config = get_current_model_config()
-    summarization_threshold = model_config.summarization_threshold
     use_summarization = False
     
-    if context_tokens > summarization_threshold:
-        # Контекст превышает порог модели - используем суммаризацию
-        print(f"[RAG] Context size {context_tokens} tokens exceeds model threshold {summarization_threshold}. Using summarization...")
-        
+    # Валидация и нормализация режима
+    valid_modes = ["auto", "normal", "summarize", "detailed"]
+    if req.mode not in valid_modes:
+        print(f"[RAG] Invalid mode '{req.mode}', using default 'auto'")
+        req.mode = "auto"
+    
+    # Определение нужна ли суммаризация на основе режима
+    if req.mode == "summarize":
+        # Принудительная суммаризация
+        should_summarize = True
+        print(f"[RAG] Mode: summarize (forced). Context: {context_tokens} tokens")
+    elif req.mode in ["normal", "detailed"]:
+        # Никогда не суммаризировать
+        should_summarize = False
+        print(f"[RAG] Mode: {req.mode} (no summarization). Context: {context_tokens} tokens")
+    else:  # mode == "auto"
+        # Автоматическое решение на основе порога модели
+        should_summarize = context_tokens > model_config.summarization_threshold
+        if should_summarize:
+            print(f"[RAG] Mode: auto. Context {context_tokens} tokens > threshold {model_config.summarization_threshold}. Using summarization.")
+        else:
+            print(f"[RAG] Mode: auto. Context {context_tokens} tokens ≤ threshold {model_config.summarization_threshold}. Using normal RAG.")
+    
+    if should_summarize:
         try:
-            summary = summarize_chunks(fused, query=req.q, max_output_tokens=model_config.summarization_max_output)
+            summary = summarize_chunks(
+                fused,
+                query=req.q,
+                max_output_tokens=model_config.summarization_max_output
+            )
             
             # Построить промпт с суммаризированным контекстом
             prompt = (
@@ -218,12 +242,13 @@ def ask(req: AskRequest = Body(...)):
                 "Ответь кратко и по делу. Если перечисляешь дедлайны — укажи дату и источник."
             )
             use_summarization = True
+            
         except Exception as e:
             # Fallback: если суммаризация не удалась - используем обычный промпт
             print(f"[RAG] Summarization failed: {e}. Falling back to normal prompt.")
             prompt = build_prompt(fused, req.q)
     else:
-        # Контекст нормального размера - обычный RAG
+        # Обычный RAG без суммаризации
         prompt = build_prompt(fused, req.q)
     
     answer = call_llm(prompt)
@@ -240,6 +265,7 @@ def ask(req: AskRequest = Body(...)):
         "sources": sources,
         "summarized": use_summarization,  # Индикатор использования суммаризации
         "context_tokens": context_tokens,  # Размер исходного контекста
+        "mode": req.mode,  # Режим работы (auto/normal/summarize/detailed)
         "model": config.LLM_MODEL,  # Какая модель использовалась
     }
     answer_tokens = _count_answer_tokens(answer)

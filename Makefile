@@ -100,6 +100,9 @@ verify-blackwell:
 test-summarization:
 	@./scripts/test_summarization.sh
 
+test-modes:
+	@./scripts/test_ask_modes.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -135,3 +138,4 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test-summarization - Test summarization feature"
+	@echo "  make test-modes         - Test /ask modes (auto/normal/summarize/detailed)"
