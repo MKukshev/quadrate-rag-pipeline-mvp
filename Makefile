@@ -76,17 +76,50 @@ wait:
 train-doctypes:
 	docker compose exec -T backend python -m backend.scripts.train_doc_type_classifier --docs /app/docs --output /app/backend/models/doc_type_classifier.joblib
 
+# ===== MIG (Multi-Instance GPU) =====
+up-vllm-mig:
+	@echo "Starting with vLLM + MIG (requires MIG setup)..."
+	docker compose -f docker-compose.vllm-mig.yml up -d
+
+down-vllm-mig:
+	docker compose -f docker-compose.vllm-mig.yml down
+
+logs-vllm-mig:
+	docker compose -f docker-compose.vllm-mig.yml logs -f vllm
+
+setup-mig:
+	@echo "Setting up NVIDIA MIG (requires sudo)..."
+	@sudo ./scripts/setup_mig.sh
+
+list-mig:
+	@./scripts/list_mig_devices.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
+	@echo ""
+	@echo "Basic:"
 	@echo "  make up              - Start with Ollama (default)"
-	@echo "  make up-vllm         - Start with vLLM (GPU required)"
 	@echo "  make down            - Stop Ollama setup"
+	@echo "  make logs            - Show logs"
+	@echo ""
+	@echo "vLLM (GPU):"
+	@echo "  make up-vllm         - Start with vLLM (single GPU)"
 	@echo "  make down-vllm       - Stop vLLM setup"
+	@echo "  make logs-vllm       - Show vLLM logs"
+	@echo ""
+	@echo "vLLM + MIG (GPU partitioning):"
+	@echo "  make setup-mig       - Setup NVIDIA MIG instances"
+	@echo "  make list-mig        - List MIG devices"
+	@echo "  make up-vllm-mig     - Start with vLLM + MIG"
+	@echo "  make down-vllm-mig   - Stop vLLM + MIG"
+	@echo "  make logs-vllm-mig   - Show vLLM MIG logs"
+	@echo ""
+	@echo "Switching:"
 	@echo "  make switch-ollama   - Switch to Ollama mode"
 	@echo "  make switch-vllm     - Switch to vLLM mode"
-	@echo "  make logs            - Show Ollama logs"
-	@echo "  make logs-vllm       - Show vLLM logs"
+	@echo ""
+	@echo "Operations:"
 	@echo "  make ingest          - Index documents"
 	@echo "  make ask             - Test RAG query"
 	@echo "  make health          - Check system health"

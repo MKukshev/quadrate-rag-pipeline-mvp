@@ -1,0 +1,132 @@
+# Docker Compose configuration with vLLM using NVIDIA MIG
+# MIG (Multi-Instance GPU) allows partitioning a single GPU into multiple isolated instances
+# Usage: docker-compose -f docker-compose.vllm-mig.yml up -d
+
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  vllm:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.vllm
+    ports: ["8001:8001"]
+    environment:
+      # Model configuration
+      - VLLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      
+      # GPU parameters
+      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
+      - VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      
+      # Additional parameters
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+      
+      # HuggingFace token
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      
+      # MIG specific - CUDA visible devices
+      - CUDA_VISIBLE_DEVICES=${MIG_DEVICE_UUID:-0}
+      - NVIDIA_VISIBLE_DEVICES=${MIG_DEVICE_UUID:-all}
+    
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # MIG device specification
+              # Format: MIG-<GPU-UUID>/<GPU instance ID>/<compute instance ID>
+              # Example: MIG-GPU-12345678-1234-1234-1234-123456789abc/3/0
+              device_ids: ["${MIG_DEVICE_UUID}"]
+              capabilities: [gpu]
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    
+    shm_size: '4gb'
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      # Qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=docs
+      
+      # Embeddings
+      - EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      
+      # Keyword Index
+      - KEYWORD_INDEX_DIR=/data/whoosh_index
+      
+      # LLM Configuration - vLLM mode
+      - LLM_MODE=vllm
+      - LLM_VLLM_URL=http://vllm:8001/v1
+      - LLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - LLM_TIMEOUT=120
+      - LLM_MAX_TOKENS=512
+      - LLM_TEMPERATURE=0.7
+      
+      # Document Processing
+      - CHUNK_TOKENS=400
+      - CHUNK_OVERLAP=50
+      
+      # Search & RAG
+      - CONTEXT_MAX_CHUNKS=6
+      - TOP_K_DEFAULT=6
+      
+      # Caching
+      - CACHE_ENABLED=true
+      - CACHE_TTL_SECONDS=600
+    
+    volumes:
+      - backend_data:/data
+      - ./backend/models:/app/backend/models
+      - ./docs:/app/docs:ro
+      - ./config:/app/config:ro
+    
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  qdrant_storage:
+  vllm_cache:
+  backend_data:
+
