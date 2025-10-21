@@ -43,7 +43,10 @@ tmp_whoosh/
 .idea/
 .vscode/
 
-# Environment files (keep example tracked)
+# Environment files (keep templates tracked)
 .env
 .env.*
 !.env.example
+!.env.ollama
+!.env.vllm
+!.env.production

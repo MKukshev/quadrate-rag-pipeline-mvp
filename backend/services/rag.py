@@ -70,4 +70,13 @@ def call_llm(prompt: str) -> str:
             return r.json().get("response", "")
         except Exception as e:
             return f"[LLM ошибка: {e}]"
+    
+    elif LLM_MODE == "vllm":
+        # Import vLLM support
+        try:
+            from .rag_vllm import call_vllm
+            return call_vllm(prompt)
+        except Exception as e:
+            return f"[vLLM ошибка: {e}]"
+    
     return "[LLM выключена]"

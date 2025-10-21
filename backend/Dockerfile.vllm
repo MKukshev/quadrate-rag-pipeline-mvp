@@ -1,0 +1,43 @@
+# Dockerfile for vLLM service
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+# Установка Python и зависимостей
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Обновление pip
+RUN pip3 install --upgrade pip
+
+# Установка vLLM и зависимостей
+RUN pip3 install vllm==0.4.2 \
+    fastapi>=0.112 \
+    uvicorn[standard]>=0.30 \
+    pydantic>=2.0
+
+WORKDIR /app
+
+# Копирование vLLM сервиса
+COPY backend/vllm_service.py /app/vllm_service.py
+
+# Порт для vLLM API
+EXPOSE 8001
+
+# Переменные окружения
+ENV VLLM_MODEL="meta-llama/Llama-2-7b-chat-hf"
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.9
+ENV VLLM_MAX_MODEL_LEN=4096
+ENV VLLM_TENSOR_PARALLEL_SIZE=1
+
+# Запуск vLLM сервера
+CMD python3 -m vllm.entrypoints.openai.api_server \
+    --model ${VLLM_MODEL} \
+    --host 0.0.0.0 \
+    --port 8001 \
+    --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION} \
+    --max-model-len ${VLLM_MAX_MODEL_LEN} \
+    --tensor-parallel-size ${VLLM_TENSOR_PARALLEL_SIZE}
+

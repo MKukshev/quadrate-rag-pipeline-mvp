@@ -1,0 +1,154 @@
+# Docker Compose configuration with vLLM instead of Ollama
+# Usage: docker-compose -f docker-compose.vllm.yml up -d
+
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  vllm:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.vllm
+    ports: ["8001:8001"]
+    environment:
+      # Модель для загрузки
+      - VLLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      
+      # GPU параметры
+      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
+      - VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      
+      # Дополнительные параметры
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+      
+      # HuggingFace токен (если нужен для gated моделей)
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    
+    volumes:
+      # Кэш моделей HuggingFace
+      - vllm_cache:/root/.cache/huggingface
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1  # Используем 1 GPU (RTX 6000 Blackwell)
+              capabilities: [gpu]
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # vLLM дольше инициализируется
+    
+    shm_size: '8gb'  # Увеличенная shared memory для GPU операций
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      # Qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=docs
+      - QDRANT_HNSW_M=16
+      - QDRANT_HNSW_EF_CONSTRUCT=100
+      - QDRANT_HNSW_EF_SEARCH=64
+      
+      # Embeddings
+      - EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      
+      # Keyword Index
+      - KEYWORD_INDEX_DIR=/data/whoosh_index
+      
+      # LLM Configuration - vLLM mode
+      - LLM_MODE=vllm
+      - LLM_VLLM_URL=http://vllm:8001/v1
+      - LLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - LLM_TIMEOUT=120
+      - LLM_MAX_TOKENS=512
+      - LLM_STREAM_ENABLED=false
+      - LLM_TEMPERATURE=0.7
+      
+      # Document Processing
+      - DOC_TYPE_MODEL_PATH=/app/backend/models/doc_type_classifier.joblib
+      - AUTO_DOC_TYPES=true
+      - CHUNK_TOKENS=400
+      - CHUNK_OVERLAP=50
+      
+      # Search & RAG
+      - CONTEXT_MAX_CHUNKS=6
+      - ONE_CHUNK_PER_DOC=true
+      - CONTEXT_SNIPPET_MAX_CHARS=600
+      - TOP_K_DEFAULT=6
+      - TOP_K_MIN=4
+      - TOP_K_MAX=8
+      
+      # MMR
+      - MMR_ENABLED=true
+      - MMR_LAMBDA=0.7
+      - MMR_CANDIDATE_MULTIPLIER=3
+      
+      # Caching
+      - CACHE_ENABLED=true
+      - CACHE_TTL_SECONDS=600
+      - CACHE_MAX_ITEMS=512
+      
+      # Reranking
+      - RERANK_ENABLED=false
+      - RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+      - RERANK_MAX_CANDIDATES=32
+      - RERANK_BATCH_SIZE=16
+    
+    volumes:
+      - backend_data:/data
+      - ./backend/models:/app/backend/models
+      - ./docs:/app/docs:ro
+      - ./config:/app/config:ro
+    
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+volumes:
+  qdrant_storage:
+  vllm_cache:
+  backend_data:
+
