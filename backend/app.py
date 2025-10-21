@@ -36,7 +36,8 @@ from services.qdrant_store import (
     upsert_chunks,
 )
 from services.rag import build_prompt, call_llm
-from services.summarization import summarize_document_by_id
+from services.summarization import summarize_document_by_id, summarize_chunks
+from services.llm_config import get_current_model_config
 
 app = FastAPI(title="AI Assistant MVP (offline)")
 
@@ -194,7 +195,37 @@ def ask(req: AskRequest = Body(...)):
     candidate_pool = rerank.apply_rerank(req.q, candidate_pool)
     mmr_selected = _apply_mmr(candidate_pool, req.q, effective_top_k)
     fused = _limit_one_chunk_per_doc(mmr_selected, candidate_pool, effective_top_k)
-    prompt = build_prompt(fused, req.q)
+    
+    # Smart context compression: автоматическая суммаризация для больших контекстов
+    context_tokens = _count_context_tokens(fused)
+    model_config = get_current_model_config()
+    summarization_threshold = model_config.summarization_threshold
+    use_summarization = False
+    
+    if context_tokens > summarization_threshold:
+        # Контекст превышает порог модели - используем суммаризацию
+        print(f"[RAG] Context size {context_tokens} tokens exceeds model threshold {summarization_threshold}. Using summarization...")
+        
+        try:
+            summary = summarize_chunks(fused, query=req.q, max_output_tokens=model_config.summarization_max_output)
+            
+            # Построить промпт с суммаризированным контекстом
+            prompt = (
+                "Ты — ассистент, отвечай строго по предоставленному КОНТЕКСТУ. "
+                "Если данных недостаточно — так и скажи.\n\n"
+                f"КОНТЕКСТ (суммаризировано из {len(fused)} найденных фрагментов):\n{summary}\n\n"
+                f"ВОПРОС:\n{req.q}\n\n"
+                "Ответь кратко и по делу. Если перечисляешь дедлайны — укажи дату и источник."
+            )
+            use_summarization = True
+        except Exception as e:
+            # Fallback: если суммаризация не удалась - используем обычный промпт
+            print(f"[RAG] Summarization failed: {e}. Falling back to normal prompt.")
+            prompt = build_prompt(fused, req.q)
+    else:
+        # Контекст нормального размера - обычный RAG
+        prompt = build_prompt(fused, req.q)
+    
     answer = call_llm(prompt)
     sources = [
         {
@@ -204,8 +235,13 @@ def ask(req: AskRequest = Body(...)):
         }
         for r in fused
     ]
-    response = {"answer": answer, "sources": sources}
-    context_tokens = _count_context_tokens(fused)
+    response = {
+        "answer": answer,
+        "sources": sources,
+        "summarized": use_summarization,  # Индикатор использования суммаризации
+        "context_tokens": context_tokens,  # Размер исходного контекста
+        "model": config.LLM_MODEL,  # Какая модель использовалась
+    }
     answer_tokens = _count_answer_tokens(answer)
     latency_ms = (time.perf_counter() - start) * 1000
     record_ask(latency_ms, context_tokens, answer_tokens, False)
@@ -309,6 +345,32 @@ def health():
 @app.get("/metrics")
 def metrics_endpoint():
     return metrics_snapshot()
+
+
+@app.get("/model-config")
+def get_model_configuration():
+    """
+    Получить конфигурацию текущей LLM модели
+    
+    Показывает параметры модели: context window, пороги суммаризации, и т.д.
+    """
+    model_config = get_current_model_config()
+    
+    return {
+        "model_name": model_config.model_name,
+        "provider": model_config.provider,
+        "context_window": model_config.context_window,
+        "max_output_tokens": model_config.max_output_tokens,
+        "effective_context_for_rag": model_config.effective_context_for_rag,
+        "summarization_threshold": model_config.summarization_threshold,
+        "summarization_max_output": model_config.summarization_max_output,
+        "recommended_chunk_limit": model_config.recommended_chunk_limit,
+        "tokens_per_second": model_config.tokens_per_second,
+        "supports_streaming": model_config.supports_streaming,
+        "supports_function_calling": model_config.supports_function_calling,
+        "description": model_config.description,
+        "recommended_use_cases": model_config.recommended_use_cases,
+    }
 
 
 def _normalize_doc_types(values: Optional[List[str]], fallback_text: Optional[str]) -> Optional[List[str]]:
