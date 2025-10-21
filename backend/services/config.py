@@ -13,8 +13,10 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 KEYWORD_INDEX_DIR = Path(os.getenv("KEYWORD_INDEX_DIR", "/data/whoosh_index")).resolve()
 KEYWORD_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-LLM_MODE = os.getenv("LLM_MODE", "ollama")     # ollama|none
+LLM_MODE = os.getenv("LLM_MODE", "ollama")     # ollama|vllm|none
 LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")
+LLM_VLLM_URL = os.getenv("LLM_VLLM_URL", "http://vllm:8001/v1")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
 _DEFAULT_DOC_TYPE_MODEL_PATH = (
     Path(__file__).resolve().parents[1] / "models" / "doc_type_classifier.joblib"
