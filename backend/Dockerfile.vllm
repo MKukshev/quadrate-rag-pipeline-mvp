@@ -1,7 +1,8 @@
 # Dockerfile for vLLM service
 # Optimized for NVIDIA RTX 6000 Blackwell (96GB)
-# Blackwell architecture requires CUDA 12.4+ for optimal performance
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+# Blackwell architecture (compute capability 10.0) requires CUDA 12.8+ for native support
+# For PTX compatibility, CUDA 12.4+ works but 12.8 is recommended for sm_100 cubin
+FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu22.04
 
 # Установка Python и зависимостей
 RUN apt-get update && apt-get install -y \
@@ -20,11 +21,18 @@ RUN pip3 install --upgrade pip setuptools wheel
 
 # Установка vLLM и зависимостей
 # vLLM 0.6.0+ включает оптимизации для Blackwell
-RUN pip3 install vllm==0.6.2 \
+# Устанавливаем с CUDA 12.6 support и Blackwell compute capability
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0"
+ENV CUDA_HOME=/usr/local/cuda
+
+RUN pip3 install --no-cache-dir \
+    torch>=2.5.0 \
+    vllm==0.6.2 \
     fastapi>=0.112 \
     uvicorn[standard]>=0.30 \
     pydantic>=2.0 \
-    ray>=2.9.0
+    ray>=2.9.0 \
+    xformers
 
 WORKDIR /app
 

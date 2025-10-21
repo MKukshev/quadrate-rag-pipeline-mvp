@@ -94,6 +94,9 @@ setup-mig:
 list-mig:
 	@./scripts/list_mig_devices.sh
 
+verify-blackwell:
+	@./scripts/verify_blackwell_compatibility.sh
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -114,6 +117,9 @@ help:
 	@echo "  make up-vllm-mig     - Start with vLLM + MIG"
 	@echo "  make down-vllm-mig   - Stop vLLM + MIG"
 	@echo "  make logs-vllm-mig   - Show vLLM MIG logs"
+	@echo ""
+	@echo "Blackwell Verification:"
+	@echo "  make verify-blackwell - Verify Blackwell compatibility"
 	@echo ""
 	@echo "Switching:"
 	@echo "  make switch-ollama   - Switch to Ollama mode"
