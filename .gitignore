@@ -49,5 +49,6 @@ tmp_whoosh/
 !.env.example
 !.env.ollama
 !.env.vllm
+!.env.vllm-fp8
 !.env.vllm-mig
 !.env.production

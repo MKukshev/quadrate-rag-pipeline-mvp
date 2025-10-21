@@ -1,4 +1,4 @@
-# MIG Quick Start для RTX 6000 Ada 96GB
+# MIG Quick Start для RTX 6000 Blackwell 96GB
 
 ## 🚀 За 5 минут
 
