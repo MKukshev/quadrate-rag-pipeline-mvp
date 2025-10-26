@@ -1,43 +1,45 @@
 # Dockerfile for vLLM service and Backend
 # Optimized for NVIDIA RTX 6000 Blackwell (96GB) with CUDA 13.0
 # Blackwell architecture (compute capability 10.0) requires CUDA 12.8+ for native support
-FROM nvidia/cuda:13.0-devel-ubuntu24.04
+FROM nvidia/cuda:13.0.1-devel-ubuntu24.04
 
 # Установка Python и зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
     python3-pip \
     python3.12-venv \
+    python3.12-dev \
     build-essential \
     libglib2.0-0 \
     libgl1 \
     libxml2 \
     libxslt1.1 \
-    libjpeg62-turbo \
+    libjpeg-turbo8 \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка python3.12 как default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+# Создание и активация виртуального окружения
+RUN python3.12 -m venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
 # Обновление pip
-RUN pip3 install --upgrade pip setuptools wheel
+RUN python -m pip install --upgrade pip setuptools wheel
 
-# Установка PyTorch 2.7.0+ с CUDA 13.0
-# vLLM 0.6.0+ включает оптимизации для Blackwell
+# Установка PyTorch 2.9.0 с поддержкой CUDA 13.0 (cu130)
 ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0"
 ENV CUDA_HOME=/usr/local/cuda
 
-RUN pip3 install --no-cache-dir \
-    torch>=2.7.0 \
-    torchvision \
-    torchaudio \
-    --index-url https://download.pytorch.org/whl/cu131
+RUN python -m pip install --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cu130 \
+    torch==2.9.0+cu130 \
+    torchvision==0.24.0+cu130 \
+    torchaudio==2.9.0+cu130
 
-# Установка vLLM и FastAPI для LLM service
-RUN pip3 install --no-cache-dir \
-    vllm==0.6.2 \
+# Установка vLLM (0.11.0 с поддержкой MXFP4) и FastAPI для LLM service
+RUN python -m pip install --no-cache-dir \
+    vllm==0.11.0 \
     fastapi>=0.112 \
     uvicorn[standard]>=0.30 \
     pydantic>=2.0 \
@@ -46,10 +48,10 @@ RUN pip3 install --no-cache-dir \
 
 # Установка Backend зависимостей
 COPY backend/requirements.txt ./requirements.txt
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /app
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/backend:/app
 
 # Копируем весь проект
 COPY . /app
@@ -72,4 +74,3 @@ CMD python3 -m vllm.entrypoints.openai.api_server \
     --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION} \
     --max-model-len ${VLLM_MAX_MODEL_LEN} \
     --tensor-parallel-size ${VLLM_TENSOR_PARALLEL_SIZE}
-

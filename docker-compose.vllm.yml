@@ -24,11 +24,11 @@ services:
     ports: ["8001:8001"]
     environment:
       # Модель для загрузки
-      - VLLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - VLLM_MODEL=${VLLM_MODEL:-OpenGPT/gpt-oss-20b}
       
-      # GPU параметры (оптимизировано для Blackwell)
-      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.95}
-      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-16384}
+      # GPU параметры (оптимизировано для 20B модели)
+      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
       - VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE:-1}
       
       # Blackwell optimizations
@@ -36,12 +36,12 @@ services:
       - VLLM_USE_FLASHINFER=${VLLM_USE_FLASHINFER:-true}
       - VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-true}
       
-      # Дополнительные параметры
-      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-512}
+      # Дополнительные параметры (уменьшено для 20B модели)
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
       - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
       
-      # HuggingFace токен (если нужен для gated моделей)
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      # HuggingFace token (для gated моделей)
+      - HF_TOKEN=${HF_TOKEN:-}
     
     volumes:
       # Кэш моделей HuggingFace
@@ -89,7 +89,7 @@ services:
       # LLM Configuration - vLLM mode
       - LLM_MODE=vllm
       - LLM_VLLM_URL=http://vllm:8001/v1
-      - LLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - LLM_MODEL=${VLLM_MODEL:-OpenGPT/gpt-oss-20b}
       - LLM_TIMEOUT=120
       - LLM_MAX_TOKENS=512
       - LLM_STREAM_ENABLED=false

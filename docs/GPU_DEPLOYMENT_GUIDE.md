@@ -71,13 +71,13 @@
 # Проверить версию драйвера
 nvidia-smi
 
-# Установить CUDA 12.6.1 для Blackwell
-wget https://developer.download.nvidia.com/compute/cuda/12.6.1/local_installers/cuda_12.6.1_550.54.15_linux.run
-sudo sh cuda_12.6.1_550.54.15_linux.run
+# Установить CUDA 13 для Blackwell
+wget https://developer.download.nvidia.com/compute/cuda/13.0.2/local_installers/cuda_13.0.2_580.95.05_linux.run
+sudo sh cuda_13.0.2_580.95.05_linux.run
 
 # Добавить в PATH
 echo 'export PATH=/usr/local/cuda-12.6/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-13/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
 source ~/.bashrc
 ```
 

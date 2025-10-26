@@ -1,0 +1,6 @@
+FROM qdrant/qdrant:latest
+
+# Add curl for health checks executed inside the container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*

@@ -39,6 +39,9 @@ curl http://localhost:8000/health
 - [GPU_BACKEND_UPDATE.md](GPU_BACKEND_UPDATE.md) - Обновление GPU конфигурации
 - [docs/GPU_DEPLOYMENT_GUIDE.md](docs/GPU_DEPLOYMENT_GUIDE.md) - Полное руководство
 - [BLACKWELL_QUICKSTART.md](BLACKWELL_QUICKSTART.md) - Оптимизация для RTX 6000 Blackwell
+- [ENV_SETUP_GUIDE.md](ENV_SETUP_GUIDE.md) - Настройка переменных окружения (.env)
+- [DUAL_MODELS_QUICKSTART.md](DUAL_MODELS_QUICKSTART.md) - Запуск двух моделей одновременно
+- [ANYTHINGLLM_INTEGRATION.md](ANYTHINGLLM_INTEGRATION.md) - Интеграция с AnythingLLM
 
 **Производительность:**
 - LLM: 150-400 tokens/sec vs 40-60 на Ollama ✨

@@ -6,42 +6,50 @@ version: "3.9"
 
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.qdrant
+    image: quadrate-rag-pipeline-mvp-qdrant
     ports: ["6333:6333"]
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6333/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
 
-  vllm:
+  # vLLM сервис #1: MEDIUM model (большая модель, требует больше памяти)
+  vllm-medium:
     build:
       context: .
       dockerfile: backend/Dockerfile.vllm
+    container_name: vllm-medium
     ports: ["8001:8001"]
     environment:
       # Model configuration
-      - VLLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - VLLM_MODEL=${VLLM_MODEL_MEDIUM:-OpenGPT/gpt-oss-20b}
       
-      # GPU parameters
-      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
-      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
+      # GPU parameters (оптимизировано для medium модели)
+      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION_MEDIUM:-0.85}
+      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN_MEDIUM:-8192}
       - VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE:-1}
       
-      # Additional parameters
-      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
+      # Additional parameters (уменьшено для экономии памяти)
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS_MEDIUM:-128}
       - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
       
-      # HuggingFace token
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      # Оптимизации для больших моделей
+      - VLLM_ENABLE_CHUNKED_PREFILL=true
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       
-      # MIG specific - CUDA visible devices
-      - CUDA_VISIBLE_DEVICES=${MIG_DEVICE_UUID:-0}
-      - NVIDIA_VISIBLE_DEVICES=${MIG_DEVICE_UUID:-all}
+      # HuggingFace token (для gated моделей)
+      - HF_TOKEN=${HF_TOKEN:-}
+      
+      # MIG specific - используем 2g.48gb инстанс для medium модели
+      - NVIDIA_VISIBLE_DEVICES=${MIG_MEDIUM:-all}
     
     volumes:
       - vllm_cache:/root/.cache/huggingface
@@ -51,10 +59,9 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # MIG device specification
-              # Format: MIG-<GPU-UUID>/<GPU instance ID>/<compute instance ID>
-              # Example: MIG-GPU-12345678-1234-1234-1234-123456789abc/3/0
-              device_ids: ["${MIG_DEVICE_UUID}"]
+              # MIG device для medium модели (обычно 2g.48gb)
+              # Format: MIG-GPU-UUID/GI/CI
+              device_ids: ["${MIG_MEDIUM:-0}"]
               capabilities: [gpu]
     
     restart: unless-stopped
@@ -67,6 +74,57 @@ services:
       start_period: 120s
     
     shm_size: '4gb'
+
+  # vLLM сервис #2: SMALL model (меньшая модель, быстрее работает)
+  vllm-small:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.vllm
+    container_name: vllm-small
+    ports: ["8002:8001"]
+    environment:
+      # Model configuration
+      - VLLM_MODEL=${VLLM_MODEL_SMALL:-mistralai/Mistral-7B-Instruct-v0.3}
+      
+      # GPU parameters (оптимизировано для small модели)
+      - VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION_SMALL:-0.90}
+      - VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN_SMALL:-16384}
+      - VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      
+      # Additional parameters (можно больше для меньшей модели)
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS_SMALL:-256}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+      
+      # HuggingFace token (для gated моделей)
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      
+      # MIG specific - используем 1g.24gb инстанс для small модели
+      # Можно также использовать 2g.48gb если есть свободный
+      - NVIDIA_VISIBLE_DEVICES=${MIG_SMALL:-all}
+    
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # MIG device для small модели (обычно 1g.24gb)
+              device_ids: ["${MIG_SMALL:-1}"]
+              capabilities: [gpu]
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    
+    shm_size: '2gb'
 
   backend:
     build:
@@ -87,11 +145,11 @@ services:
       
       # LLM Configuration - vLLM mode
       - LLM_MODE=vllm
-      - LLM_VLLM_URL=http://vllm:8001/v1
-      - LLM_MODEL=${VLLM_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct}
+      - LLM_VLLM_URL=http://vllm-medium:8001/v1
+      - LLM_MODEL=${VLLM_MODEL_MEDIUM:-OpenGPT/gpt-oss-20b}
       - LLM_TIMEOUT=120
       - LLM_MAX_TOKENS=512
-      - LLM_TEMPERATURE=0.7
+      - LLM_TEMPERATURE=0.3
       
       # Document Processing
       - CHUNK_TOKENS=400
@@ -104,6 +162,10 @@ services:
       # Caching
       - CACHE_ENABLED=true
       - CACHE_TTL_SECONDS=600
+      
+      # MIG specific - CUDA visible devices
+      # Используем 1g.24gb инстанс для backend (embeddings)
+      - NVIDIA_VISIBLE_DEVICES=${MIG_1G_24GB:-all}
     
     volumes:
       - backend_data:/data
@@ -116,10 +178,24 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      vllm:
+      vllm-medium:
+        condition: service_healthy
+      vllm-small:
         condition: service_healthy
     
     restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+          devices:
+            - driver: nvidia
+              # MIG device для 1g.24gb (Backend embeddings)
+              device_ids: ["${MIG_1G_24GB:-0}"]
+              capabilities: [gpu]
     
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
@@ -132,4 +208,3 @@ volumes:
   qdrant_storage:
   vllm_cache:
   backend_data:
-

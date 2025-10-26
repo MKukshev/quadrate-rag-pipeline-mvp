@@ -1,9 +1,19 @@
 
-SPACE ?= space_demo
-MODEL ?= llama3.1:8b
+ifneq (,$(wildcard .env))
+include .env
+export $(shell sed -n 's/^\([A-Za-z0-9_][A-Za-z0-9_]*\)=.*/\1/p' .env)
+endif
 
-.PHONY: up down build backend logs ingest ask pull-model health wait train-doctypes
+SPACE ?= space_demo
+DEFAULT_OLLAMA_MODEL := $(if $(strip $(LLM_MODEL)),$(LLM_MODEL),llama3.1:8b)
+MODEL ?= $(DEFAULT_OLLAMA_MODEL)
+DEFAULT_VLLM_MODEL := $(if $(strip $(VLLM_MODEL)),$(VLLM_MODEL),openai/gpt-oss-20b)
+VLLM_MODEL ?= $(DEFAULT_VLLM_MODEL)
+VLLM_COMPOSE ?= docker-compose.vllm-mig.yml
+
+.PHONY: up down build backend logs ingest ask pull-model pull-model-vllm health wait train-doctypes
 .PHONY: up-vllm down-vllm logs-vllm switch-ollama switch-vllm
+.PHONY: up-dual-models down-dual-models logs-dual-models logs-medium logs-small test-medium test-small test-both-models restart-medium restart-small test-dual-models check-env
 
 # ===== Ollama (default) =====
 up:
@@ -24,6 +34,10 @@ logs:
 
 pull-model:
 	docker compose exec -T ollama ollama pull $(MODEL)
+
+pull-model-vllm:
+	@echo "Prefetching $(VLLM_MODEL) into vLLM cache..."
+	docker compose -f $(VLLM_COMPOSE) exec -T vllm env HF_MODEL="$(VLLM_MODEL)" python -c "import os; from huggingface_hub import snapshot_download; model=os.environ['HF_MODEL']; cache_dir=os.environ.get('HF_HOME', '/root/.cache/huggingface'); print(f'Downloading {model} into cache {cache_dir} …', flush=True); snapshot_download(repo_id=model, cache_dir=cache_dir, resume_download=True, local_files_only=False); print('✓ Download complete.', flush=True)"
 
 # ===== vLLM =====
 up-vllm:
@@ -94,7 +108,51 @@ down-vllm-mig:
 	docker compose -f docker-compose.vllm-mig.yml down
 
 logs-vllm-mig:
-	docker compose -f docker-compose.vllm-mig.yml logs -f vllm
+	docker compose -f docker-compose.vllm-mig.yml logs -f vllm-medium
+
+# ===== Dual Models (MEDIUM + SMALL) =====
+up-dual-models:
+	@echo "Starting dual vLLM models (MEDIUM + SMALL)..."
+	@if [ ! -f .env ]; then \
+		echo "⚠️  Warning: .env not found. Using default values from docker-compose."; \
+		echo "💡 Tip: See ENV_SETUP_GUIDE.md for configuration examples."; \
+	fi
+	docker compose -f docker-compose.vllm-mig.yml up -d
+
+down-dual-models:
+	docker compose -f docker-compose.vllm-mig.yml down
+
+logs-dual-models:
+	docker compose -f docker-compose.vllm-mig.yml logs -f vllm-medium vllm-small
+
+logs-medium:
+	docker compose -f docker-compose.vllm-mig.yml logs -f vllm-medium
+
+logs-small:
+	docker compose -f docker-compose.vllm-mig.yml logs -f vllm-small
+
+restart-medium:
+	docker compose -f docker-compose.vllm-mig.yml restart vllm-medium
+
+restart-small:
+	docker compose -f docker-compose.vllm-mig.yml restart vllm-small
+
+# Test individual models
+test-medium:
+	@echo "Testing MEDIUM model on port 8001..."
+	@curl -s http://localhost:8001/health && echo "" || echo "❌ MEDIUM model not responding"
+	@curl -s http://localhost:8001/v1/models | jq '.data[0].id' 2>/dev/null || echo "Models endpoint not available"
+
+test-small:
+	@echo "Testing SMALL model on port 8002..."
+	@curl -s http://localhost:8002/health && echo "" || echo "❌ SMALL model not responding"
+	@curl -s http://localhost:8002/v1/models | jq '.data[0].id' 2>/dev/null || echo "Models endpoint not available"
+
+test-both-models:
+	@echo "=== Testing both models ==="
+	@make test-medium
+	@echo ""
+	@make test-small
 
 setup-mig:
 	@echo "Setting up NVIDIA MIG (requires sudo)..."
@@ -118,6 +176,36 @@ test-summary-store:
 test-streaming:
 	@./scripts/test_streaming.sh
 
+test-dual-models:
+	@./scripts/test_dual_models.sh
+
+# Check environment configuration
+check-env:
+	@echo "=== Environment Configuration Check ==="
+	@echo ""
+	@if [ -f .env ]; then \
+		echo "✅ .env file found"; \
+		echo ""; \
+		echo "MEDIUM Model:"; \
+		grep "VLLM_MODEL_MEDIUM" .env || echo "  ⚠️  VLLM_MODEL_MEDIUM not set"; \
+		grep "MIG_MEDIUM" .env || echo "  ⚠️  MIG_MEDIUM not set"; \
+		echo ""; \
+		echo "SMALL Model:"; \
+		grep "VLLM_MODEL_SMALL" .env || echo "  ⚠️  VLLM_MODEL_SMALL not set"; \
+		grep "MIG_SMALL" .env || echo "  ⚠️  MIG_SMALL not set"; \
+		echo ""; \
+		echo "Backend:"; \
+		grep "MIG_1G_24GB" .env || echo "  ⚠️  MIG_1G_24GB not set"; \
+	else \
+		echo "❌ .env file not found"; \
+		echo ""; \
+		echo "💡 Create .env file with required variables."; \
+		echo "   See ENV_SETUP_GUIDE.md for examples."; \
+	fi
+	@echo ""
+	@echo "=== Docker Compose Config Preview ==="
+	@docker compose -f docker-compose.vllm-mig.yml config 2>&1 | grep -A 2 "VLLM_MODEL" || echo "Could not preview config"
+
 # ===== Help =====
 help:
 	@echo "Available targets:"
@@ -131,13 +219,26 @@ help:
 	@echo "  make up-vllm         - Start with vLLM (single GPU)"
 	@echo "  make down-vllm       - Stop vLLM setup"
 	@echo "  make logs-vllm       - Show vLLM logs"
+	@echo "  make pull-model-vllm - Prefetch HF model into vLLM cache"
 	@echo ""
 	@echo "vLLM + MIG (GPU partitioning):"
 	@echo "  make setup-mig       - Setup NVIDIA MIG instances"
 	@echo "  make list-mig        - List MIG devices"
-	@echo "  make up-vllm-mig     - Start with vLLM + MIG"
+	@echo "  make up-vllm-mig     - Start with vLLM + MIG (single model)"
 	@echo "  make down-vllm-mig   - Stop vLLM + MIG"
 	@echo "  make logs-vllm-mig   - Show vLLM MIG logs"
+	@echo ""
+	@echo "Dual Models (MEDIUM + SMALL):"
+	@echo "  make up-dual-models  - Start both models simultaneously"
+	@echo "  make down-dual-models- Stop dual models setup"
+	@echo "  make logs-dual-models- Show logs for both models"
+	@echo "  make logs-medium     - Show logs for MEDIUM model only"
+	@echo "  make logs-small      - Show logs for SMALL model only"
+	@echo "  make test-medium     - Test MEDIUM model (port 8001)"
+	@echo "  make test-small      - Test SMALL model (port 8002)"
+	@echo "  make test-both-models- Test both models"
+	@echo "  make restart-medium  - Restart MEDIUM model container"
+	@echo "  make restart-small   - Restart SMALL model container"
 	@echo ""
 	@echo "Blackwell Verification:"
 	@echo "  make verify-blackwell - Verify Blackwell compatibility"
@@ -150,9 +251,11 @@ help:
 	@echo "  make ingest          - Index documents"
 	@echo "  make ask             - Test RAG query"
 	@echo "  make health          - Check system health"
+	@echo "  make check-env       - Check .env configuration for dual models"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test-summarization - Test summarization feature"
 	@echo "  make test-modes         - Test /ask modes (auto/normal/summarize/detailed)"
 	@echo "  make test-summary-store - Test summary storage (pattern 4)"
 	@echo "  make test-streaming     - Test streaming summarization (pattern 5)"
+	@echo "  make test-dual-models   - Test both MEDIUM and SMALL models"
