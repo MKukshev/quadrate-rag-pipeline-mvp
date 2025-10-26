@@ -1,32 +1,42 @@
-# Dockerfile for vLLM service
-# Optimized for NVIDIA RTX 6000 Blackwell (96GB)
+# Dockerfile for vLLM service and Backend
+# Optimized for NVIDIA RTX 6000 Blackwell (96GB) with CUDA 13.0
 # Blackwell architecture (compute capability 10.0) requires CUDA 12.8+ for native support
-# For PTX compatibility, CUDA 12.4+ works but 12.8 is recommended for sm_100 cubin
-FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:13.0-devel-ubuntu24.04
 
 # Установка Python и зависимостей
-RUN apt-get update && apt-get install -y \
-    python3.11 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
     python3-pip \
-    python3.11-venv \
+    python3.12-venv \
+    build-essential \
+    libglib2.0-0 \
+    libgl1 \
+    libxml2 \
+    libxslt1.1 \
+    libjpeg62-turbo \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка python3.11 как default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# Установка python3.12 как default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 
 # Обновление pip
 RUN pip3 install --upgrade pip setuptools wheel
 
-# Установка vLLM и зависимостей
+# Установка PyTorch 2.7.0+ с CUDA 13.0
 # vLLM 0.6.0+ включает оптимизации для Blackwell
-# Устанавливаем с CUDA 12.6 support и Blackwell compute capability
 ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0"
 ENV CUDA_HOME=/usr/local/cuda
 
 RUN pip3 install --no-cache-dir \
-    torch>=2.5.0 \
+    torch>=2.7.0 \
+    torchvision \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/cu131
+
+# Установка vLLM и FastAPI для LLM service
+RUN pip3 install --no-cache-dir \
     vllm==0.6.2 \
     fastapi>=0.112 \
     uvicorn[standard]>=0.30 \
@@ -34,21 +44,27 @@ RUN pip3 install --no-cache-dir \
     ray>=2.9.0 \
     xformers
 
-WORKDIR /app
+# Установка Backend зависимостей
+COPY backend/requirements.txt ./requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Копирование vLLM сервиса
-COPY backend/vllm_service.py /app/vllm_service.py
+WORKDIR /app
+ENV PYTHONPATH=/app
+
+# Копируем весь проект
+COPY . /app
 
 # Порт для vLLM API
 EXPOSE 8001
 
-# Переменные окружения
+# Переменные окружения для vLLM
 ENV VLLM_MODEL="meta-llama/Llama-2-7b-chat-hf"
 ENV VLLM_GPU_MEMORY_UTILIZATION=0.9
 ENV VLLM_MAX_MODEL_LEN=4096
 ENV VLLM_TENSOR_PARALLEL_SIZE=1
 
-# Запуск vLLM сервера
+# По умолчанию запускаем vLLM сервер
+# Для backend контейнера используется command override в docker-compose
 CMD python3 -m vllm.entrypoints.openai.api_server \
     --model ${VLLM_MODEL} \
     --host 0.0.0.0 \

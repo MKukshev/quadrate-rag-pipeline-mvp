@@ -39,6 +39,15 @@ logs-vllm:
 build-vllm:
 	docker compose -f docker-compose.vllm.yml build
 
+# Проверка GPU в контейнерах
+check-gpu:
+	@echo "Checking GPU availability in backend..."
+	@docker compose -f docker-compose.vllm.yml exec backend python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')" || echo "Backend container not running"
+
+check-vllm-gpu:
+	@echo "Checking GPU in vLLM..."
+	@docker compose -f docker-compose.vllm.yml exec vllm python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')" || echo "vLLM container not running"
+
 # ===== Switching between Ollama and vLLM =====
 switch-ollama:
 	@echo "Switching to Ollama..."

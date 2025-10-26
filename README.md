@@ -5,6 +5,8 @@
 
 ## Быстрый старт
 
+### Локальный запуск (Ollama)
+
 ```bash
 make up           # qdrant + ollama + backend
 make wait         # дождаться готовности backend (health)
@@ -13,6 +15,35 @@ make ingest       # проиндексируйте примеры из ./docs (S
 make ask          # тестовый вопрос к RAG
 make health       # проверить состояние сервисов (backend/embeddings/llm/qdrant)
 ```
+
+### 🚀 Развертывание на GPU сервере (vLLM)
+
+```bash
+# 1. Клонировать репозиторий
+git clone https://github.com/your-org/ai-assistant-mvp.git
+cd ai-assistant-mvp
+
+# 2. Настроить (добавить HF токен)
+cp .env.vllm .env
+nano .env  # HUGGING_FACE_HUB_TOKEN=hf_xxxxx
+
+# 3. Запустить vLLM стек
+make up-vllm
+
+# 4. Проверить
+curl http://localhost:8000/health
+```
+
+📚 **Документация по развертыванию:**
+- [GPU_DEPLOYMENT_QUICKSTART.md](GPU_DEPLOYMENT_QUICKSTART.md) - Быстрый старт
+- [GPU_BACKEND_UPDATE.md](GPU_BACKEND_UPDATE.md) - Обновление GPU конфигурации
+- [docs/GPU_DEPLOYMENT_GUIDE.md](docs/GPU_DEPLOYMENT_GUIDE.md) - Полное руководство
+- [BLACKWELL_QUICKSTART.md](BLACKWELL_QUICKSTART.md) - Оптимизация для RTX 6000 Blackwell
+
+**Производительность:**
+- LLM: 150-400 tokens/sec vs 40-60 на Ollama ✨
+- Backend: Embeddings 20x быстрее на GPU (5ms vs 100ms)
+- Backend: Reranking 25x быстрее на GPU (2ms vs 50ms)
 
 Откройте Swagger: http://localhost:8000/docs
 
