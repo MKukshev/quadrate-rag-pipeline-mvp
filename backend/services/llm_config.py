@@ -289,6 +289,12 @@ def get_llm_registry(config_path: Optional[Path] = None) -> LLMModelRegistry:
         _global_registry = LLMModelRegistry()
         
         # Load custom configs if provided
+        if config_path is None:
+            # Try default location
+            default_config = Path(__file__).parents[2] / "config" / "llm_models.json"
+            if default_config.exists():
+                config_path = default_config
+        
         if config_path and config_path.exists():
             _global_registry.load_from_file(config_path)
     

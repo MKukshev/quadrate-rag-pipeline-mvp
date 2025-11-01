@@ -8,6 +8,7 @@ import re
 from typing import Dict, List, Optional
 from .thread_parser import Thread
 from .rag import call_llm
+from .language_detection import detect_language, get_language_instruction, get_language_name
 
 
 async def summarize_thread(
@@ -34,8 +35,14 @@ async def summarize_thread(
     # 1. Generate structured text representation
     structured_text = thread.to_structured_text()
     
-    # 2. Base summary
-    base_prompt = f"""Summarize this {thread.thread_type} conversation thread.
+    # 2. Language detection
+    detected_lang = detect_language(structured_text)
+    lang_instruction = get_language_instruction(detected_lang)
+    lang_name = get_language_name(detected_lang)
+    
+    # 3. Base summary
+    base_prompt = f"""{lang_instruction}
+Summarize this {thread.thread_type} conversation thread.
 
 Focus on:
 - Main discussion points
@@ -47,7 +54,9 @@ Focus on:
 
 {'Focus specifically on: ' + focus if focus else ''}
 
-Provide a clear, coherent summary in 2-4 paragraphs."""
+Provide a clear, coherent summary in 2-4 paragraphs.
+Remember: USE THE SAME LANGUAGE ({lang_name}) as the messages above!
+SUMMARY (in {lang_name}):"""
     
     summary = call_llm(base_prompt)
     
@@ -61,9 +70,10 @@ Provide a clear, coherent summary in 2-4 paragraphs."""
         "duration_days": thread.duration_days
     }
     
-    # 3. Extract action items (tasks, TODOs, assignments)
+    # 4. Extract action items (tasks, TODOs, assignments)
     if extract_action_items:
-        action_prompt = f"""Extract all action items, tasks, and assignments from this conversation.
+        action_prompt = f"""{lang_instruction}
+Extract all action items, tasks, and assignments from this conversation.
 
 For each action item, identify:
 - Task description (what needs to be done)
@@ -76,7 +86,8 @@ For each action item, identify:
 Return a JSON array of action items. Each item should have:
 {{"task": "description", "owner": "name or null", "deadline": "date or null", "priority": "level or null"}}
 
-If no action items found, return empty array: []"""
+If no action items found, return empty array: []
+Remember: USE THE SAME LANGUAGE ({lang_name}) as the messages!"""
         
         try:
             action_response = call_llm(action_prompt)
@@ -90,9 +101,10 @@ If no action items found, return empty array: []"""
         
         result["action_items"] = action_items
     
-    # 4. Extract decisions
+    # 5. Extract decisions
     if extract_decisions:
-        decision_prompt = f"""List all decisions made in this conversation.
+        decision_prompt = f"""{lang_instruction}
+List all decisions made in this conversation.
 
 Include:
 - Approvals or rejections
@@ -106,7 +118,7 @@ Include:
 
 List each decision clearly, one per line. Start each with "- ".
 If no decisions found, return "No explicit decisions made."
-"""
+Remember: USE THE SAME LANGUAGE ({lang_name}) as the messages!"""
         
         try:
             decisions_text = call_llm(decision_prompt)
@@ -125,14 +137,17 @@ If no decisions found, return "No explicit decisions made."
         
         result["decisions"] = decisions
     
-    # 5. Extract topics
+    # 6. Extract topics
     if extract_topics:
-        topic_prompt = f"""Identify the main topics discussed in this conversation.
+        topic_prompt = f"""{lang_instruction}
+Identify the main topics discussed in this conversation.
 
 {structured_text}
 
 List 3-7 key topics. Format as comma-separated list.
 Example: Budget Planning, Timeline Discussion, Resource Allocation
+
+Remember: USE THE SAME LANGUAGE ({lang_name}) as the messages!
 
 Topics:"""
         

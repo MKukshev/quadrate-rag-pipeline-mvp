@@ -34,12 +34,18 @@ services:
       - LLM_MODE=ollama
       - LLM_MODEL=llama3.1:8b
       - DOC_TYPE_MODEL_PATH=
-      - LLM_TIMEOUT=240
+      - LLM_TIMEOUT=300
+      - LLM_MAX_TOKENS=2048
+      - LLM_TEMPERATURE=0.7
+      - OLLAMA_NUM_CTX=40960
       - CHUNK_TOKENS=500
       - CHUNK_OVERLAP=50
+      - PYTHONUNBUFFERED=1
     volumes:
       - backend_data:/data
       - ./backend/models:/app/backend/models
+      - ./backend:/app/backend:ro
+      - ./config:/app/config:ro
     depends_on: [qdrant, ollama]
     ports: ["8000:8000"]
 

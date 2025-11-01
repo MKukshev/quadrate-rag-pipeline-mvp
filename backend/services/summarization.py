@@ -6,10 +6,11 @@ Provides map-reduce summarization for large documents that exceed context limits
 import asyncio
 import time
 from typing import List, Dict, Optional, AsyncGenerator
-from .rag import call_llm
+from .rag import call_llm, calculate_dynamic_max_tokens
 from .chunking import split_markdown
 from . import config
 from .llm_config import get_current_model_config
+from .language_detection import detect_language, get_language_instruction, get_language_name
 
 
 def count_tokens_simple(text: str) -> int:
@@ -45,17 +46,29 @@ async def summarize_text(text: str, max_summary_tokens: int = 500, focus: Option
     Returns:
         Summary text
     """
+    detected_lang = detect_language(text)
+    lang_instruction = get_language_instruction(detected_lang)
+    lang_name = get_language_name(detected_lang)
+    print(f"[Language Detection] Input text language: {detected_lang} ({lang_name})")
+
     focus_instruction = f"\nFocus specifically on: {focus}" if focus else ""
     
-    prompt = f"""Summarize the following text concisely in approximately {max_summary_tokens} words or less.
+    prompt = f"""{lang_instruction}
+Summarize the following text concisely in approximately {max_summary_tokens} words or less.
 Preserve key facts, numbers, dates, and important details.{focus_instruction}
+Remember: USE THE SAME LANGUAGE as the input text!
 
-TEXT:
+TEXT (Language: {lang_name}):
 {text}
 
-SUMMARY:"""
+SUMMARY (in {lang_name}):"""
     
-    summary = call_llm(prompt)
+    model_config = get_current_model_config()
+    dynamic_max = calculate_dynamic_max_tokens(prompt, model_config.context_window, verbose=True)
+    actual_max = min(max_summary_tokens, dynamic_max)
+    print(f"[FINAL MAX_TOKENS DECISION] Requested: {max_summary_tokens}, Available: {dynamic_max}, Using: {actual_max}")
+    
+    summary = call_llm(prompt, max_tokens=actual_max)
     
     # Remove common LLM artifacts
     if summary.startswith("[LLM"):
@@ -124,15 +137,25 @@ async def summarize_long_text(
     # Otherwise, do a final summarization
     print(f"[Summarization] REDUCE phase: Combining {len(summaries)} summaries...")
     
-    final_prompt = f"""Create a comprehensive summary from these partial summaries.
+    detected_lang = detect_language(combined)
+    lang_instruction = get_language_instruction(detected_lang)
+    lang_name = get_language_name(detected_lang)
+    
+    final_prompt = f"""{lang_instruction}
+Create a comprehensive summary from these partial summaries.
 Preserve all key facts, numbers, dates, and important details.
+Remember: USE THE SAME LANGUAGE ({lang_name}) as the partial summaries!
 
-PARTIAL SUMMARIES:
+PARTIAL SUMMARIES (Language: {lang_name}):
 {combined}
 
-FINAL SUMMARY:"""
+FINAL SUMMARY (in {lang_name}):"""
     
-    final_summary = call_llm(final_prompt)
+    model_config = get_current_model_config()
+    dynamic_max = calculate_dynamic_max_tokens(final_prompt, model_config.context_window, verbose=True)
+    actual_max = min(2000, dynamic_max)  # Limit reduce phase to 2000 tokens
+    
+    final_summary = call_llm(final_prompt, max_tokens=actual_max)
     print(f"[Summarization] Complete!")
     
     return final_summary
@@ -168,10 +191,15 @@ async def summarize_chunks(
     
     combined = "\n\n---\n\n".join(texts)
     
+    # Calculate dynamic max_output_tokens based on model config
+    model_config = get_current_model_config()
+    # Use smaller chunk_size to fit within context
+    effective_chunk_size = min(8000, model_config.context_window // 2)
+    
     # Summarize with focus on query
     return await summarize_long_text(
         combined,
-        chunk_size=8000,
+        chunk_size=effective_chunk_size,
         focus=query
     )
 

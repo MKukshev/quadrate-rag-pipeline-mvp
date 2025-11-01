@@ -144,11 +144,12 @@ services:
       - KEYWORD_INDEX_DIR=/data/whoosh_index
       
       # LLM Configuration - vLLM mode
+      - PYTHONUNBUFFERED=1
       - LLM_MODE=vllm
       - LLM_VLLM_URL=http://vllm-medium:8001/v1
-      - LLM_MODEL=${VLLM_MODEL_MEDIUM:-OpenGPT/gpt-oss-20b}
+      - LLM_MODEL=${VLLM_MODEL_MEDIUM:-openai/gpt-oss-20b}
       - LLM_TIMEOUT=120
-      - LLM_MAX_TOKENS=512
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-2048}
       - LLM_TEMPERATURE=0.3
       
       # Document Processing

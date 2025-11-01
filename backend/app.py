@@ -3,8 +3,11 @@ import pathlib
 import time
 from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile, BackgroundTasks
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile, BackgroundTasks, Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -60,6 +63,40 @@ from services.thread_store import (
 from services.thread_summarization import summarize_thread, summarize_thread_from_messages
 
 app = FastAPI(title="AI Assistant MVP (offline)")
+
+
+class TimingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_time = datetime.now()
+        start_time = time.time()
+
+        if request.url.path not in ["/health", "/metrics"]:
+            print(f"\n{'🌐 '*40}", flush=True)
+            print(f"[HTTP REQUEST ⬇️ ] {request.method} {request.url.path}", flush=True)
+            print(f"  ⏰ Request time: {request_time.strftime('%H:%M:%S.%f')[:-3]}", flush=True)
+            print(f"  📍 Client: {request.client.host if request.client else 'unknown'}", flush=True)
+            if request.query_params:
+                print(f"  🔍 Query params: {dict(request.query_params)}", flush=True)
+            print(f"{'─'*80}", flush=True)
+
+        response = await call_next(request)
+
+        elapsed = time.time() - start_time
+        response_time = datetime.now()
+
+        if request.url.path not in ["/health", "/metrics"]:
+            print(f"{'─'*80}", flush=True)
+            print(f"[HTTP RESPONSE ⬆️ ] {request.method} {request.url.path}", flush=True)
+            print(f"  ✅ Status: {response.status_code}", flush=True)
+            print(f"  ⏱️  Total HTTP time: {elapsed:.3f}s", flush=True)
+            print(f"  ⏰ Response time: {response_time.strftime('%H:%M:%S.%f')[:-3]}", flush=True)
+            print(f"{'🌐 '*40}\n", flush=True)
+
+        response.headers["X-Process-Time"] = f"{elapsed:.3f}"
+        return response
+
+
+app.add_middleware(TimingMiddleware)
 
 
 @app.on_event("startup")
@@ -221,7 +258,7 @@ def search(
 
 
 @app.post("/ask")
-def ask(req: AskRequest = Body(...)):
+async def ask(req: AskRequest = Body(...)):
     start = time.perf_counter()
     norm_doc_types = _normalize_doc_types(req.doc_types, req.q)
     requested_top_k = req.top_k or config.TOP_K_DEFAULT
@@ -281,7 +318,7 @@ def ask(req: AskRequest = Body(...)):
     
     if should_summarize:
         try:
-            summary = summarize_chunks(
+            summary = await summarize_chunks(
                 fused,
                 query=req.q,
                 max_output_tokens=model_config.summarization_max_output
@@ -331,7 +368,7 @@ def ask(req: AskRequest = Body(...)):
 
 
 @app.post("/summarize")
-def summarize_document(req: SummarizeRequest = Body(...)):
+async def summarize_document(req: SummarizeRequest = Body(...)):
     """
     Суммаризировать документ по doc_id
     
@@ -379,7 +416,18 @@ def summarize_document(req: SummarizeRequest = Body(...)):
         
         # Суммаризация
         print(f"[Summarize] Generating on-the-fly summary for {req.doc_id}")
-        summary = summarize_document_by_id(req.doc_id, req.space_id, req.focus)
+        summary = await summarize_document_by_id(req.doc_id, req.space_id, req.focus)
+        
+        # Сохранить в кэш только если нет фокуса
+        if not req.focus:
+            save_document_summary(
+                doc_id=req.doc_id,
+                space_id=req.space_id,
+                summary=summary,
+                original_chunks=len(results[0]),
+                summary_tokens=len(summary.split())
+            )
+            print(f"[Summarize] Summary saved to cache for {req.doc_id}")
         
         return {
             "doc_id": req.doc_id,
@@ -420,20 +468,21 @@ async def summarize_document_stream(req: SummarizeRequest = Body(...)):
             
             if cached and not req.focus:
                 # Вернуть кэшированный summary сразу
-                yield f"data: {json.dumps({
+                event_data = {
                     'type': 'cached',
                     'summary': cached['summary'],
                     'progress': 100,
                     'generated_at': cached.get('generated_at')
-                })}\n\n"
+                }
+                yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
                 return
             
             # Streaming суммаризация
             async for event in summarize_document_streaming(req.doc_id, req.space_id, req.focus):
-                yield f"data: {json.dumps(event)}\n\n"
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     
     return StreamingResponse(
         generate_events(),
@@ -489,11 +538,12 @@ def _generate_and_save_summary_task(
     """
     Background task для генерации и сохранения summary
     """
+    import asyncio
     try:
         print(f"[Background] Starting summarization for {doc_id}")
         
         # Генерировать summary
-        summary = summarize_document_by_id(doc_id, space_id, focus=None)
+        summary = asyncio.run(summarize_document_by_id(doc_id, space_id, focus=None))
         
         # Сохранить в отдельной коллекции
         summary_id = save_document_summary(

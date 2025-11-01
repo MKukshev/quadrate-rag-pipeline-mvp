@@ -113,17 +113,35 @@ def parse_email_thread(text: str) -> Thread:
     To: Bob <bob@example.com>
     Subject: Project Discussion
     
+    Also supports Russian email headers:
+    От: Alice <alice@example.com>
+    Дата: Mon, 10 Jan 2025 10:00:00
+    Кому: Bob <bob@example.com>
+    Тема: Project Discussion
+    
     Message body...
     """
     messages = []
     
-    # Split by "From:" headers
-    email_pattern = r'From:.*?(?=\nFrom:|$)'
-    raw_emails = re.findall(email_pattern, text, re.DOTALL | re.MULTILINE)
+    # Preprocess: Remove file-level headers
+    text = re.sub(r'^ПЕРЕПИСКА ПО EMAIL.*?\n', '', text, flags=re.MULTILINE | re.IGNORECASE)
+    text = re.sub(r'^Тема:.*?\n', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^Период:.*?\n', '', text, flags=re.MULTILINE)
+    
+    # Split by разделители (═══) СНАЧАЛА
+    sections = re.split(r'═+', text)
+    sections = [s.strip() for s in sections if s.strip()]
+    
+    if len(sections) <= 1:
+        # If no separators, try splitting by "From:" or "От:"
+        email_pattern = r'(?:From|От):.*?(?=\n(?:From|От):|$)'
+        raw_emails = re.findall(email_pattern, text, re.DOTALL | re.MULTILINE)
+    else:
+        raw_emails = sections
     
     for idx, raw in enumerate(raw_emails):
-        # Extract sender
-        sender_match = re.search(r'From:\s*(.+?)(?:<(.+?)>)?(?:\n|$)', raw)
+        # Extract sender (supports both English and Russian)
+        sender_match = re.search(r'(?:From|От):\s*(.+?)(?:<(.+?)>)?(?:\n|$)', raw, re.IGNORECASE)
         if sender_match:
             sender = sender_match.group(1).strip()
             email = sender_match.group(2)
@@ -132,16 +150,16 @@ def parse_email_thread(text: str) -> Thread:
         else:
             sender = "Unknown"
         
-        # Extract recipients
-        to_match = re.search(r'To:\s*(.+?)(?:\n)', raw)
+        # Extract recipients (supports both English and Russian)
+        to_match = re.search(r'(?:To|Кому):\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
         if to_match:
             recipients_str = to_match.group(1).strip()
             recipients = [r.strip() for r in recipients_str.split(',')]
         else:
             recipients = []
         
-        # Extract date
-        date_match = re.search(r'Date:\s*(.+?)(?:\n)', raw)
+        # Extract date (supports both English and Russian)
+        date_match = re.search(r'(?:Date|Дата):\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
         if date_match:
             date_str = date_match.group(1).strip()
             # Try multiple date formats
@@ -149,8 +167,8 @@ def parse_email_thread(text: str) -> Thread:
         else:
             date = datetime.now()
         
-        # Extract subject
-        subject_match = re.search(r'Subject:\s*(.+?)(?:\n)', raw)
+        # Extract subject (supports both English and Russian)
+        subject_match = re.search(r'(?:Subject|Тема):\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
         subject = subject_match.group(1).strip() if subject_match else None
         
         # Extract message ID (optional)
@@ -161,21 +179,21 @@ def parse_email_thread(text: str) -> Thread:
         reply_match = re.search(r'In-Reply-To:\s*<(.+?)>', raw)
         reply_to = reply_match.group(1) if reply_match else None
         
-        # Extract body (everything after last header line before double newline)
-        body_match = re.search(r'\n\n(.+)', raw, re.DOTALL)
-        if body_match:
-            text = body_match.group(1).strip()
-        else:
-            # Fallback: content after Subject or To
-            lines = raw.split('\n')
-            body_start = 0
-            for i, line in enumerate(lines):
-                if line.startswith(('Subject:', 'To:', 'Date:')):
-                    body_start = i + 1
-            text = '\n'.join(lines[body_start:]).strip()
+        # Extract body (everything after last header line)
+        lines = raw.split('\n')
+        body_start = 0
+        for i, line in enumerate(lines):
+            if re.match(r'^(?:From|От|To|Кому|Date|Дата|Subject|Тема|Message-ID|In-Reply-To):', line, re.IGNORECASE):
+                body_start = i + 1
+        
+        text_raw = '\n'.join(lines[body_start:]).strip()
+        
+        # Clean up separators and multiple newlines
+        text_raw = re.sub(r'═+', '', text_raw)
+        text_raw = re.sub(r'\n{3,}', '\n\n', text_raw)
         
         # Clean quoted text and signatures
-        text = clean_email_text(text)
+        text = clean_email_text(text_raw)
         
         messages.append(Message(
             sender=sender,

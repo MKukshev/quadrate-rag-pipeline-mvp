@@ -34,6 +34,9 @@ LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "240"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "256"))
 LLM_STREAM_ENABLED = os.getenv("LLM_STREAM_ENABLED", "false").lower() == "true"
 
+# Ollama specific config
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))  # Context window size for Ollama
+
 CHUNK_TOKENS = int(os.getenv("CHUNK_TOKENS", "500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
 CONTEXT_MAX_CHUNKS = int(os.getenv("CONTEXT_MAX_CHUNKS", "6"))
